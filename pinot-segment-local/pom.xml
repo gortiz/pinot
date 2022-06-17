@@ -157,5 +157,10 @@
       <type>test-jar</type>
       <scope>test</scope>
     </dependency>
+    <dependency>
+      <groupId>org.rocksdb</groupId>
+      <artifactId>rocksdbjni</artifactId>
+      <version>6.10.2</version>
+    </dependency>
   </dependencies>
 </project>
