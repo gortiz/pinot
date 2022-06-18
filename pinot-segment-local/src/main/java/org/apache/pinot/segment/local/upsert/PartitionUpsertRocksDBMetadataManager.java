@@ -42,14 +42,17 @@ public class PartitionUpsertRocksDBMetadataManager {
   final AtomicInteger _segmentId = new AtomicInteger();
 
   public PartitionUpsertRocksDBMetadataManager(String tableNameWithType, int partitionId, ServerMetrics serverMetrics,
-      @Nullable PartialUpsertHandler partialUpsertHandler, HashFunction hashFunction)  throws Exception {
+      @Nullable PartialUpsertHandler partialUpsertHandler, HashFunction hashFunction)
+      throws Exception {
     _tableNameWithType = tableNameWithType;
     _partitionId = partitionId;
     _serverMetrics = serverMetrics;
     _partialUpsertHandler = partialUpsertHandler;
     _hashFunction = hashFunction;
-    String dbPath = StringUtil.join("/", "upsert_metdata", _tableNameWithType, String.valueOf(_partitionId), String.valueOf(System.currentTimeMillis()));
-    _rocksDB = TransactionDB.open(new Options(), new TransactionDBOptions() ,Files.createTempDirectory(dbPath).toAbsolutePath().toString());
+    String dbPath = StringUtil.join("/", "upsert_metdata", _tableNameWithType, String.valueOf(_partitionId),
+        String.valueOf(System.currentTimeMillis()));
+    _rocksDB = TransactionDB.open(new Options(), new TransactionDBOptions(),
+        Files.createTempDirectory(dbPath).toAbsolutePath().toString());
   }
 
   /**
@@ -58,9 +61,9 @@ public class PartitionUpsertRocksDBMetadataManager {
   public void addRecord(IndexSegment segment, RecordInfo recordInfo) {
     ThreadSafeMutableRoaringBitmap validDocIds = Objects.requireNonNull(segment.getValidDocIds());
     int segmentId = _segmentToSegmentIdMap.computeIfAbsent(segment, (segmentObj) -> {
-        Integer newSegmentId = _segmentId.incrementAndGet();
-        _segmentIdToSegmentMap.put(newSegmentId, segment);
-        return newSegmentId;
+      Integer newSegmentId = _segmentId.incrementAndGet();
+      _segmentIdToSegmentMap.put(newSegmentId, segment);
+      return newSegmentId;
     });
 
     try (Transaction txn = _rocksDB.beginTransaction(new WriteOptions())) {
