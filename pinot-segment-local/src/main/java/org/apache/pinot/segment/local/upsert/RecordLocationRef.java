@@ -1,5 +1,6 @@
 package org.apache.pinot.segment.local.upsert;
 
+import java.nio.ByteBuffer;
 import org.apache.pinot.segment.spi.IndexSegment;
 
 
@@ -23,7 +24,16 @@ public class RecordLocationRef {
     return _docId;
   }
 
-  public Comparable getComparisonValue() {
-    return _comparisonValue;
+  public long getComparisonValue() {
+    return (Long) _comparisonValue;
   }
+
+  public byte[] asBytes() {
+    ByteBuffer buffer = ByteBuffer.allocate(16);
+    buffer.putInt(_segmentRef);
+    buffer.putInt(_docId);
+    buffer.putLong((Long) _comparisonValue);
+    return buffer.array();
+  }
+
 }

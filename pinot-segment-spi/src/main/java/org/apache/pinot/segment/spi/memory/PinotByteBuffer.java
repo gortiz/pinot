@@ -45,7 +45,7 @@ public class PinotByteBuffer extends PinotDataBuffer {
     return buffer;
   }
 
-  static PinotByteBuffer mapFile(File file, boolean readOnly, long offset, int size, ByteOrder byteOrder)
+  public static PinotByteBuffer mapFile(File file, boolean readOnly, long offset, int size, ByteOrder byteOrder)
       throws IOException {
     if (readOnly) {
       try (FileChannel fileChannel = new RandomAccessFile(file, "r").getChannel()) {
