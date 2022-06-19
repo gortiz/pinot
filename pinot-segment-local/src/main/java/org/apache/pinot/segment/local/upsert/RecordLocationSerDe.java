@@ -1,5 +1,6 @@
 package org.apache.pinot.segment.local.upsert;
 
+import java.nio.ByteBuffer;
 import org.apache.pinot.segment.local.indexsegment.immutable.EmptyIndexSegment;
 import org.apache.pinot.segment.spi.IndexSegment;
 import org.apache.pinot.segment.spi.index.metadata.SegmentMetadataImpl;
@@ -11,7 +12,7 @@ public class RecordLocationSerDe {
 
   public static byte[] serialize(RecordLocationRef recordLocation) {
     try {
-      return JsonUtils.objectToBytes(recordLocation);
+      return recordLocation.asBytes();
     } catch (Exception e) {
       // log error
       return null;
@@ -20,7 +21,14 @@ public class RecordLocationSerDe {
 
   public static RecordLocationRef deserialize(byte[] recordLocationBytes) {
     try {
-      return JsonUtils.bytesToObject(recordLocationBytes, RecordLocationRef.class);
+      ByteBuffer byteBuffer = ByteBuffer.wrap(recordLocationBytes);
+      int segmentRef = byteBuffer.getInt(0);
+      if(segmentRef == -1) return null;
+
+      int docId = byteBuffer.getInt(Integer.BYTES);
+      long comparisonValue = byteBuffer.getLong(2* Integer.BYTES);
+
+      return new RecordLocationRef(segmentRef, docId, comparisonValue);
     } catch (Exception e) {
       // log error
       return null;
