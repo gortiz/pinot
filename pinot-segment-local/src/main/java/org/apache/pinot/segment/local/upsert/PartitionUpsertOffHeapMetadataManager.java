@@ -1,6 +1,7 @@
 package org.apache.pinot.segment.local.upsert;
 
 import java.io.File;
+import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.file.Files;
 import java.util.Objects;
@@ -13,12 +14,15 @@ import org.apache.pinot.segment.local.io.writer.impl.MmapMemoryManager;
 import org.apache.pinot.segment.local.io.writer.impl.MutableOffHeapByteArrayStore;
 import org.apache.pinot.segment.local.realtime.impl.dictionary.BytesOffHeapMutableDictionary;
 import org.apache.pinot.segment.local.realtime.impl.dictionary.OffHeapMutableBytesStore;
+import org.apache.pinot.segment.local.realtime.impl.forward.VarByteSVMutableForwardIndex;
 import org.apache.pinot.segment.local.utils.RecordInfo;
 import org.apache.pinot.segment.spi.IndexSegment;
+import org.apache.pinot.segment.spi.index.mutable.MutableForwardIndex;
 import org.apache.pinot.segment.spi.index.mutable.ThreadSafeMutableRoaringBitmap;
 import org.apache.pinot.segment.spi.memory.PinotByteBuffer;
 import org.apache.pinot.segment.spi.memory.PinotDataBufferMemoryManager;
 import org.apache.pinot.spi.config.table.HashFunction;
+import org.apache.pinot.spi.data.FieldSpec;
 import org.apache.pinot.spi.utils.StringUtil;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -26,6 +30,7 @@ import org.slf4j.LoggerFactory;
 
 public class PartitionUpsertOffHeapMetadataManager {
   private static final Logger LOGGER = LoggerFactory.getLogger(PartitionUpsertOffHeapMetadataManager.class);
+  public static final int INITIAL_SEGMENT_ID = 10;
 
   private final String _tableNameWithType;
   private final int _partitionId;
@@ -34,12 +39,12 @@ public class PartitionUpsertOffHeapMetadataManager {
   private final HashFunction _hashFunction;
 
   private BytesOffHeapMutableDictionary _bytesOffHeapMutableDictionary;
-  private PinotByteBuffer _byteBuffer;
   private PinotDataBufferMemoryManager _memoryManager;
+  private MutableForwardIndex _mutableForwardIndex;
   final ConcurrentHashMap<Object, Integer> _segmentToSegmentIdMap = new ConcurrentHashMap<>();
   //need to create a second reverse lookup hashmap, any way to avoid it?
   final ConcurrentHashMap<Integer, Object> _segmentIdToSegmentMap = new ConcurrentHashMap<>();
-  final AtomicInteger _segmentId = new AtomicInteger();
+  final AtomicInteger _segmentId = new AtomicInteger(INITIAL_SEGMENT_ID);
 
   public PartitionUpsertOffHeapMetadataManager(String tableNameWithType, int partitionId, ServerMetrics serverMetrics,
       @Nullable PartialUpsertHandler partialUpsertHandler, HashFunction hashFunction)
@@ -57,9 +62,7 @@ public class PartitionUpsertOffHeapMetadataManager {
         new MmapMemoryManager(Files.createTempDirectory("off-heap-upsert").toAbsolutePath().toString(), segmentName,
             null);
     _bytesOffHeapMutableDictionary = new BytesOffHeapMutableDictionary(3000, 3, _memoryManager, null, 10);
-
-    File file  =new File(FileUtils.getTempDirectory(), "off-heap-upsert-metadata");
-    _byteBuffer = PinotByteBuffer.mapFile(file, false, 0, 10000, ByteOrder.BIG_ENDIAN);
+    _mutableForwardIndex = new VarByteSVMutableForwardIndex(FieldSpec.DataType.BYTES, _memoryManager, null, 3000, 16);
   }
 
   /**
@@ -104,31 +107,22 @@ public class PartitionUpsertOffHeapMetadataManager {
 
   //TODO: How to update data for primary key at a specific index
   private void updateRecordInfo(int primaryKeyId, RecordLocationRef recordLocationRef) {
-      int offset = primaryKeyId * (2 * Integer.BYTES + Long.BYTES);
-
-      // handle all 3 parts of record location
-      _byteBuffer.putInt(offset, recordLocationRef.getSegmentRef());
-      _byteBuffer.putInt(offset + Integer.BYTES, recordLocationRef.getDocId());
-      _byteBuffer.putLong(offset + 2*Integer.BYTES, recordLocationRef.getComparisonValue());
+    _mutableForwardIndex.setBytes(primaryKeyId, recordLocationRef.asBytes());
   }
 
   private RecordLocationRef getRecordInfo(int primaryKeyId) {
-    int offset = primaryKeyId * (2 * Integer.BYTES + Long.BYTES);
-
-    int segmentRef = _byteBuffer.getInt(offset);
+    byte[] val = _mutableForwardIndex.getBytes(primaryKeyId);
+    ByteBuffer buffer = ByteBuffer.wrap(val, 0, 16);
+    int segmentRef = buffer.getInt();
 
     //TODO: insert -1 as segment ref when a primary key is removed, will lead to fragmentation in the buffer though
-    if(segmentRef == -1) {
+    if(segmentRef < INITIAL_SEGMENT_ID || segmentRef > INITIAL_SEGMENT_ID + _segmentToSegmentIdMap.size()) {
       return null;
     }
 
-    int docId = _byteBuffer.getInt(offset + Integer.BYTES);
-    long comparisonVal = _byteBuffer.getLong(offset + Long.BYTES);
+    int docId = buffer.getInt();
+    long comparisonVal = buffer.getLong();
 
     return new RecordLocationRef(segmentRef, docId, comparisonVal);
-  }
-
-  public static void main(String[] args) {
-
   }
 }
