@@ -1,30 +1,25 @@
 package org.apache.pinot.segment.local.upsert;
 
-import java.io.File;
+import com.google.common.collect.Lists;
 import java.nio.ByteBuffer;
-import java.nio.ByteOrder;
 import java.nio.file.Files;
+import java.util.Arrays;
+import java.util.Collections;
 import java.util.Iterator;
 import java.util.Objects;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
 import javax.annotation.Nullable;
-import org.apache.commons.io.FileUtils;
 import org.apache.commons.lang.NotImplementedException;
-import org.apache.pinot.common.metrics.ServerGauge;
 import org.apache.pinot.common.metrics.ServerMetrics;
-import org.apache.pinot.common.utils.LLCSegmentName;
 import org.apache.pinot.segment.local.io.writer.impl.MmapMemoryManager;
-import org.apache.pinot.segment.local.io.writer.impl.MutableOffHeapByteArrayStore;
 import org.apache.pinot.segment.local.realtime.impl.dictionary.BytesOffHeapMutableDictionary;
-import org.apache.pinot.segment.local.realtime.impl.dictionary.OffHeapMutableBytesStore;
+import org.apache.pinot.segment.local.realtime.impl.forward.FixedByteSVMultiColForwardIndex;
 import org.apache.pinot.segment.local.realtime.impl.forward.VarByteSVMutableForwardIndex;
-import org.apache.pinot.segment.local.utils.HashUtils;
 import org.apache.pinot.segment.local.utils.RecordInfo;
 import org.apache.pinot.segment.spi.IndexSegment;
 import org.apache.pinot.segment.spi.index.mutable.MutableForwardIndex;
 import org.apache.pinot.segment.spi.index.mutable.ThreadSafeMutableRoaringBitmap;
-import org.apache.pinot.segment.spi.memory.PinotByteBuffer;
 import org.apache.pinot.segment.spi.memory.PinotDataBufferMemoryManager;
 import org.apache.pinot.spi.config.table.HashFunction;
 import org.apache.pinot.spi.data.FieldSpec;
@@ -33,8 +28,8 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 
-public class PartitionUpsertOffHeapMetadataManager {
-  private static final Logger LOGGER = LoggerFactory.getLogger(PartitionUpsertOffHeapMetadataManager.class);
+public class PartitionUpsertOffHeapMetadataManagerV2 {
+  private static final Logger LOGGER = LoggerFactory.getLogger(PartitionUpsertOffHeapMetadataManagerV2.class);
   public static final int INITIAL_SEGMENT_ID = 10;
 
   private final String _tableNameWithType;
@@ -45,13 +40,13 @@ public class PartitionUpsertOffHeapMetadataManager {
 
   public BytesOffHeapMutableDictionary _bytesOffHeapMutableDictionary;
   private PinotDataBufferMemoryManager _memoryManager;
-  private MutableForwardIndex _mutableForwardIndex;
+  private FixedByteSVMultiColForwardIndex _mutableForwardIndex;
   final ConcurrentHashMap<Object, Integer> _segmentToSegmentIdMap = new ConcurrentHashMap<>();
   //need to create a second reverse lookup hashmap, any way to avoid it?
   final ConcurrentHashMap<Integer, Object> _segmentIdToSegmentMap = new ConcurrentHashMap<>();
   final AtomicInteger _segmentId = new AtomicInteger(INITIAL_SEGMENT_ID);
 
-  public PartitionUpsertOffHeapMetadataManager(String tableNameWithType, int partitionId, ServerMetrics serverMetrics,
+  public PartitionUpsertOffHeapMetadataManagerV2(String tableNameWithType, int partitionId, ServerMetrics serverMetrics,
       @Nullable PartialUpsertHandler partialUpsertHandler, HashFunction hashFunction)
       throws Exception {
     _tableNameWithType = tableNameWithType;
@@ -67,7 +62,12 @@ public class PartitionUpsertOffHeapMetadataManager {
         new MmapMemoryManager(Files.createTempDirectory("off-heap-upsert").toAbsolutePath().toString(), segmentName,
             null);
     _bytesOffHeapMutableDictionary = new BytesOffHeapMutableDictionary(3000, 3, _memoryManager, null, 10);
-    _mutableForwardIndex = new VarByteSVMutableForwardIndex(FieldSpec.DataType.BYTES, _memoryManager, null, 3000, 16);
+    //_mutableForwardIndex = new VarByteSVMutableForwardIndex(FieldSpec.DataType.BYTES, _memoryManager, null, 3000, 16);
+    _mutableForwardIndex =
+        new FixedByteSVMultiColForwardIndex(false, 100, _memoryManager, null, new FieldSpec.DataType[]{
+            FieldSpec.DataType.INT, FieldSpec.DataType.INT, FieldSpec.DataType.LONG
+        });
+
   }
 
   /**
@@ -86,15 +86,14 @@ public class PartitionUpsertOffHeapMetadataManager {
     while (recordInfoIterator.hasNext()) {
       RecordInfo recordInfo = recordInfoIterator.next();
       int primaryKeyId = _bytesOffHeapMutableDictionary.index(recordInfo.getPrimaryKey().asBytes());
-      if(segment.getSegmentName().contentEquals("segment_2") && recordInfo.getDocId() == 2) {
-        System.out.println("asas");
-        System.out.println("PRIMARY KEY: " + recordInfo.getPrimaryKey().getValues()[0] + ", ID: " + primaryKeyId);
-      }
       RecordLocationRef currentRecordLocation = getRecordInfo(primaryKeyId);
 
       if (currentRecordLocation != null) {
         // Existing primary key
         IndexSegment currentSegment = (IndexSegment) _segmentIdToSegmentMap.get(currentRecordLocation.getSegmentRef());
+        if(currentSegment == null) {
+          System.out.println("Asas");
+        }
         int comparisonResult =
             recordInfo.getComparisonValue().compareTo(currentRecordLocation.getComparisonValue());
 
@@ -205,21 +204,21 @@ public class PartitionUpsertOffHeapMetadataManager {
 
   //TODO: How to update data for primary key at a specific index
   private void updateRecordInfo(int primaryKeyId, RecordLocationRef recordLocationRef) {
-    _mutableForwardIndex.setBytes(primaryKeyId, recordLocationRef.asBytes());
+    _mutableForwardIndex.setInt(primaryKeyId, 0, recordLocationRef.getSegmentRef().intValue());
+    _mutableForwardIndex.setInt(primaryKeyId, 1, recordLocationRef.getDocId());
+    _mutableForwardIndex.setLong(primaryKeyId, 2, recordLocationRef.getComparisonValue());
   }
 
   private RecordLocationRef getRecordInfo(int primaryKeyId) {
-    byte[] val = _mutableForwardIndex.getBytes(primaryKeyId);
-    ByteBuffer buffer = ByteBuffer.wrap(val, 0, 16);
-    int segmentRef = buffer.getInt();
+    int segmentRef = _mutableForwardIndex.getInt(primaryKeyId, 0);
 
     //TODO: insert -1 as segment ref when a primary key is removed, will lead to fragmentation in the buffer though
-    if(segmentRef < INITIAL_SEGMENT_ID || segmentRef > INITIAL_SEGMENT_ID + _segmentToSegmentIdMap.size()) {
+    if(segmentRef <= INITIAL_SEGMENT_ID || segmentRef > INITIAL_SEGMENT_ID + _segmentToSegmentIdMap.size()) {
       return null;
     }
 
-    int docId = buffer.getInt();
-    long comparisonVal = buffer.getLong();
+    int docId =  _mutableForwardIndex.getInt(primaryKeyId, 1);
+    long comparisonVal =  _mutableForwardIndex.getLong(primaryKeyId, 2);
 
     return new RecordLocationRef(segmentRef, docId, comparisonVal);
   }
