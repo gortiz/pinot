@@ -1,5 +1,6 @@
 package org.apache.pinot.segment.local.upsert;
 
+import java.io.File;
 import java.nio.file.Files;
 import java.util.Iterator;
 import java.util.Objects;
@@ -53,12 +54,17 @@ public class PartitionUpsertOffHeapMetadataManager implements IPartitionUpsertMe
     _serverMetrics = serverMetrics;
     _partialUpsertHandler = partialUpsertHandler;
     _hashFunction = hashFunction;
+    File file = new File("/Users/kharekartik/Documents/Developer/pinot/upsert/offHeap/" + _tableNameWithType + "/" + System.currentTimeMillis());
+
+    file.mkdirs();
+    System.out.println("USING PATH: " + file.getAbsolutePath());
+
     String segmentName = StringUtil.join("-", "upsert_metadata", _tableNameWithType, String.valueOf(_partitionId),
         String.valueOf(System.currentTimeMillis()));
 
     // TODO: How to determine the cardinality of primary keys so as to estimate file size
     _memoryManager =
-        new MmapMemoryManager(Files.createTempDirectory("off-heap-upsert").toAbsolutePath().toString(), segmentName,
+        new MmapMemoryManager(file.toPath().toAbsolutePath().toString(), segmentName,
             null);
     _bytesOffHeapMutableDictionary = new BytesOffHeapMutableDictionary(3000, 3, _memoryManager, null, 10);
     //_mutableForwardIndex = new VarByteSVMutableForwardIndex(FieldSpec.DataType.BYTES, _memoryManager, null, 3000, 16);

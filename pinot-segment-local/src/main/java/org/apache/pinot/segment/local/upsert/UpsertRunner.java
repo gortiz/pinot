@@ -67,7 +67,7 @@ public class UpsertRunner {
     IndexLoadingConfig indexLoadingConfig = new IndexLoadingConfig();
     IPartitionUpsertMetadataManager partitionUpsertMetadataManager =
         PartitionUpsertMetadataManagerFactory.getPartitionUpsertMetadataManager(TABLE_NAME, 0, null, null,
-            HashFunction.NONE, PartitionUpsertMetadataManagerFactory.MetadataStore.MMAP);
+            HashFunction.NONE, PartitionUpsertMetadataManagerFactory.MetadataStore.ROCKSDB);
 
     for (int i = 0; i < _numSegments; i++) {
       String name = "segment_" + i;

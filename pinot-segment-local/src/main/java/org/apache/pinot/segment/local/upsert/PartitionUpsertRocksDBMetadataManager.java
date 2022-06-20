@@ -1,5 +1,6 @@
 package org.apache.pinot.segment.local.upsert;
 
+import java.io.File;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Iterator;
@@ -19,6 +20,7 @@ import org.apache.pinot.spi.config.table.HashFunction;
 import org.apache.pinot.spi.data.readers.GenericRow;
 import org.apache.pinot.spi.utils.StringUtil;
 import org.rocksdb.DBOptions;
+import org.rocksdb.MemTableConfig;
 import org.rocksdb.Options;
 import org.rocksdb.OptionsUtil;
 import org.rocksdb.ReadOptions;
@@ -54,11 +56,13 @@ public class PartitionUpsertRocksDBMetadataManager implements IPartitionUpsertMe
     _serverMetrics = serverMetrics;
     _partialUpsertHandler = partialUpsertHandler;
     _hashFunction = hashFunction;
-    Path path = Files.createTempDirectory(tableNameWithType);
+    File file = new File("/Users/kharekartik/Documents/Developer/pinot/upsert/rocksDB/" + _tableNameWithType + "/" + System.currentTimeMillis());
+    file.mkdirs();
+    System.out.println("USING PATH: " + file.getAbsolutePath());
     Options dbOptions = new Options();
     dbOptions.setCreateIfMissing(true);
     _rocksDB = TransactionDB.open(dbOptions, new TransactionDBOptions(),
-        path.toAbsolutePath().toString());
+        file.toPath().toAbsolutePath().toString());
   }
 
   /**
