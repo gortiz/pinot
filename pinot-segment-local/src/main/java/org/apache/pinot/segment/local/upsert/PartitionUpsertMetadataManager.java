@@ -63,7 +63,7 @@ import org.slf4j.LoggerFactory;
  */
 @SuppressWarnings({"rawtypes", "unchecked"})
 @ThreadSafe
-public class PartitionUpsertMetadataManager {
+public class PartitionUpsertMetadataManager implements IPartitionUpsertMetadataManager {
   private static final Logger LOGGER = LoggerFactory.getLogger(PartitionUpsertMetadataManager.class);
 
   private final String _tableNameWithType;
@@ -91,6 +91,7 @@ public class PartitionUpsertMetadataManager {
   /**
    * Initializes the upsert metadata for the given immutable segment.
    */
+  @Override
   public void addSegment(IndexSegment segment, Iterator<RecordInfo> recordInfoIterator) {
     String segmentName = segment.getSegmentName();
     LOGGER.info("Adding upsert metadata for segment: {}", segmentName);
@@ -164,6 +165,7 @@ public class PartitionUpsertMetadataManager {
   /**
    * Updates the upsert metadata for a new consumed record in the given consuming segment.
    */
+  @Override
   public void addRecord(IndexSegment segment, RecordInfo recordInfo) {
     ThreadSafeMutableRoaringBitmap validDocIds = Objects.requireNonNull(segment.getValidDocIds());
     _primaryKeyToRecordLocationMap.compute(HashUtils.hashPrimaryKey(recordInfo.getPrimaryKey(), _hashFunction),
@@ -202,6 +204,7 @@ public class PartitionUpsertMetadataManager {
   /**
    * Returns the merged record when partial-upsert is enabled.
    */
+  @Override
   public GenericRow updateRecord(GenericRow record, RecordInfo recordInfo) {
     // Directly return the record when partial-upsert is not enabled
     if (_partialUpsertHandler == null) {
@@ -245,6 +248,7 @@ public class PartitionUpsertMetadataManager {
    * Removes the upsert metadata for the given immutable segment. No need to remove the upsert metadata for the
    * consuming segment because it should be replaced by the committed segment.
    */
+  @Override
   public void removeSegment(IndexSegment segment) {
     String segmentName = segment.getSegmentName();
     LOGGER.info("Removing upsert metadata for segment: {}", segmentName);

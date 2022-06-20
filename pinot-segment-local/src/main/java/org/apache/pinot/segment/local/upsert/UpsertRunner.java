@@ -65,14 +65,15 @@ public class UpsertRunner {
 
     FileUtils.deleteQuietly(INDEX_DIR);
     IndexLoadingConfig indexLoadingConfig = new IndexLoadingConfig();
-    PartitionUpsertOffHeapMetadataManager
-        partitionUpsertOffHeapMetadataManager = new PartitionUpsertOffHeapMetadataManager(TABLE_NAME, 0, null, null, HashFunction.NONE);
+    IPartitionUpsertMetadataManager partitionUpsertMetadataManager =
+        PartitionUpsertMetadataManagerFactory.getPartitionUpsertMetadataManager(TABLE_NAME, 0, null, null,
+            HashFunction.NONE, PartitionUpsertMetadataManagerFactory.MetadataStore.MMAP);
 
     for (int i = 0; i < _numSegments; i++) {
       String name = "segment_" + i;
       buildSegment(name);
       ImmutableSegmentImpl immutableSegment =
-          handleUpsert(indexLoadingConfig, partitionUpsertOffHeapMetadataManager,
+          handleUpsert(indexLoadingConfig, partitionUpsertMetadataManager,
               name);
       _indexSegments.add(immutableSegment);
     }
@@ -95,14 +96,14 @@ public class UpsertRunner {
 //    for(IndexSegment indexSegment: _indexSegments) {
 //      for(int i=0; i<10; i++) {
 //        Object[] pk = new Object[]{lowCardinalityValues[i % lowCardinalityValues.length]};
-//        partitionUpsertOffHeapMetadataManager.addRecord(indexSegment, new RecordInfo(new PrimaryKey(pk), i, _supplier.getAsLong()));
+//        partitionUpsertMetadataManager.addRecord(indexSegment, new RecordInfo(new PrimaryKey(pk), i, _supplier.getAsLong()));
 //      }
 //    }
     close();
   }
 
   private static ImmutableSegmentImpl handleUpsert(IndexLoadingConfig indexLoadingConfig,
-      PartitionUpsertOffHeapMetadataManager partitionUpsertOffHeapMetadataManager, String name)
+      IPartitionUpsertMetadataManager partitionUpsertOffHeapMetadataManager, String name)
       throws Exception {
     ImmutableSegmentImpl immutableSegment = (ImmutableSegmentImpl) ImmutableSegmentLoader.load(new File(INDEX_DIR, name),
         indexLoadingConfig);

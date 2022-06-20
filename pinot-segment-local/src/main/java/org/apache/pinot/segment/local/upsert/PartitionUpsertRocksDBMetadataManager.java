@@ -16,6 +16,7 @@ import org.apache.pinot.segment.local.utils.RecordInfo;
 import org.apache.pinot.segment.spi.IndexSegment;
 import org.apache.pinot.segment.spi.index.mutable.ThreadSafeMutableRoaringBitmap;
 import org.apache.pinot.spi.config.table.HashFunction;
+import org.apache.pinot.spi.data.readers.GenericRow;
 import org.apache.pinot.spi.utils.StringUtil;
 import org.rocksdb.DBOptions;
 import org.rocksdb.Options;
@@ -31,7 +32,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 
-public class PartitionUpsertRocksDBMetadataManager {
+public class PartitionUpsertRocksDBMetadataManager implements IPartitionUpsertMetadataManager  {
   private static final Logger LOGGER = LoggerFactory.getLogger(PartitionUpsertRocksDBMetadataManager.class);
 
   private final String _tableNameWithType;
@@ -63,6 +64,7 @@ public class PartitionUpsertRocksDBMetadataManager {
   /**
    * Initializes the upsert metadata for the given immutable segment.
    */
+  @Override
   public void addSegment(IndexSegment segment, Iterator<RecordInfo> recordInfoIterator) {
     String segmentName = segment.getSegmentName();
     LOGGER.info("Adding upsert metadata for segment: {}", segmentName);
@@ -149,6 +151,7 @@ public class PartitionUpsertRocksDBMetadataManager {
   /**
    * Updates the upsert metadata for a new consumed record in the given consuming segment.
    */
+  @Override
   public void addRecord(IndexSegment segment, RecordInfo recordInfo) {
     ThreadSafeMutableRoaringBitmap validDocIds = Objects.requireNonNull(segment.getValidDocIds());
     int segmentId = _segmentToSegmentIdMap.computeIfAbsent(segment, (segmentObj) -> {
@@ -188,6 +191,16 @@ public class PartitionUpsertRocksDBMetadataManager {
     } catch (RocksDBException rocksDBException) {
       // log error
     }
+  }
+
+  @Override
+  public GenericRow updateRecord(GenericRow record, RecordInfo recordInfo) {
+    return null;
+  }
+
+  @Override
+  public void removeSegment(IndexSegment segment) {
+
   }
 
   public static void main(String[] args) {

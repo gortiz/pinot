@@ -19,12 +19,13 @@ import org.apache.pinot.segment.spi.index.mutable.ThreadSafeMutableRoaringBitmap
 import org.apache.pinot.segment.spi.memory.PinotDataBufferMemoryManager;
 import org.apache.pinot.spi.config.table.HashFunction;
 import org.apache.pinot.spi.data.FieldSpec;
+import org.apache.pinot.spi.data.readers.GenericRow;
 import org.apache.pinot.spi.utils.StringUtil;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 
-public class PartitionUpsertOffHeapMetadataManager {
+public class PartitionUpsertOffHeapMetadataManager implements IPartitionUpsertMetadataManager  {
   private static final Logger LOGGER = LoggerFactory.getLogger(PartitionUpsertOffHeapMetadataManager.class);
   public static final int INITIAL_SEGMENT_ID = 10;
 
@@ -230,5 +231,10 @@ public class PartitionUpsertOffHeapMetadataManager {
 
     _readWriteLock.readLock().unlock();
     return new RecordLocationRef(segmentRef, docId, comparisonVal);
+  }
+
+  @Override
+  public GenericRow updateRecord(GenericRow record, RecordInfo recordInfo) {
+    return null;
   }
 }
