@@ -66,13 +66,12 @@ public class UpsertRunnerRocksDB {
     FileUtils.deleteQuietly(INDEX_DIR);
     IndexLoadingConfig indexLoadingConfig = new IndexLoadingConfig();
     PartitionUpsertRocksDBMetadataManager partitionUpsertOffHeapMetadataManager = new PartitionUpsertRocksDBMetadataManager(TABLE_NAME, 0, null, null, HashFunction.NONE);
-    PartitionUpsertMetadataManager partitionUpsertMetadataManager = new PartitionUpsertMetadataManager(TABLE_NAME, 0, null, null, HashFunction.NONE);
 
     for (int i = 0; i < _numSegments; i++) {
       String name = "segment_" + i;
       buildSegment(name);
       ImmutableSegmentImpl immutableSegment =
-          handleUpsert(indexLoadingConfig, partitionUpsertOffHeapMetadataManager, partitionUpsertMetadataManager,
+          handleUpsert(indexLoadingConfig, partitionUpsertOffHeapMetadataManager,
               name);
       _indexSegments.add(immutableSegment);
     }
@@ -102,12 +101,11 @@ public class UpsertRunnerRocksDB {
   }
 
   private static ImmutableSegmentImpl handleUpsert(IndexLoadingConfig indexLoadingConfig,
-      PartitionUpsertRocksDBMetadataManager partitionUpsertOffHeapMetadataManager,
-      PartitionUpsertMetadataManager partitionUpsertMetadataManager, String name)
+      PartitionUpsertRocksDBMetadataManager partitionUpsertOffHeapMetadataManager, String name)
       throws Exception {
     ImmutableSegmentImpl immutableSegment = (ImmutableSegmentImpl) ImmutableSegmentLoader.load(new File(INDEX_DIR, name),
         indexLoadingConfig);
-    immutableSegment.enableUpsert(partitionUpsertMetadataManager, new ThreadSafeMutableRoaringBitmap());
+    immutableSegment.enableUpsert(null, new ThreadSafeMutableRoaringBitmap());
 
     Map<String, PinotSegmentColumnReader> columnToReaderMap = new HashMap<>();
     List<String> primaryKeyColumns = Collections.singletonList(LOW_CARDINALITY_STRING_COL);

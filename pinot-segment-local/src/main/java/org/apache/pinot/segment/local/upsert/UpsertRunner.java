@@ -6,11 +6,9 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashMap;
-import java.util.HashSet;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
 import java.util.UUID;
 import java.util.function.LongSupplier;
 import java.util.stream.IntStream;
@@ -22,16 +20,11 @@ import org.apache.pinot.segment.local.segment.index.loader.IndexLoadingConfig;
 import org.apache.pinot.segment.local.segment.readers.GenericRowRecordReader;
 import org.apache.pinot.segment.local.segment.readers.PinotSegmentColumnReader;
 import org.apache.pinot.segment.local.utils.RecordInfo;
-import org.apache.pinot.segment.spi.AggregationFunctionType;
-import org.apache.pinot.segment.spi.ImmutableSegment;
 import org.apache.pinot.segment.spi.IndexSegment;
 import org.apache.pinot.segment.spi.creator.SegmentGeneratorConfig;
 import org.apache.pinot.segment.spi.index.mutable.ThreadSafeMutableRoaringBitmap;
-import org.apache.pinot.segment.spi.index.startree.AggregationFunctionColumnPair;
-import org.apache.pinot.spi.config.table.BloomFilterConfig;
 import org.apache.pinot.spi.config.table.FieldConfig;
 import org.apache.pinot.spi.config.table.HashFunction;
-import org.apache.pinot.spi.config.table.StarTreeIndexConfig;
 import org.apache.pinot.spi.config.table.TableConfig;
 import org.apache.pinot.spi.config.table.TableType;
 import org.apache.pinot.spi.config.table.UpsertConfig;
@@ -42,7 +35,6 @@ import org.apache.pinot.spi.data.readers.PrimaryKey;
 import org.apache.pinot.spi.data.readers.RecordReader;
 import org.apache.pinot.spi.utils.ByteArray;
 import org.apache.pinot.spi.utils.builder.TableConfigBuilder;
-import org.roaringbitmap.IntIterator;
 import org.roaringbitmap.PeekableIntIterator;
 
 
@@ -73,14 +65,14 @@ public class UpsertRunner {
 
     FileUtils.deleteQuietly(INDEX_DIR);
     IndexLoadingConfig indexLoadingConfig = new IndexLoadingConfig();
-    PartitionUpsertOffHeapMetadataManagerV2 partitionUpsertOffHeapMetadataManager = new PartitionUpsertOffHeapMetadataManagerV2(TABLE_NAME, 0, null, null, HashFunction.NONE);
-    PartitionUpsertMetadataManager partitionUpsertMetadataManager = new PartitionUpsertMetadataManager(TABLE_NAME, 0, null, null, HashFunction.NONE);
+    PartitionUpsertOffHeapMetadataManager
+        partitionUpsertOffHeapMetadataManager = new PartitionUpsertOffHeapMetadataManager(TABLE_NAME, 0, null, null, HashFunction.NONE);
 
     for (int i = 0; i < _numSegments; i++) {
       String name = "segment_" + i;
       buildSegment(name);
       ImmutableSegmentImpl immutableSegment =
-          handleUpsert(indexLoadingConfig, partitionUpsertOffHeapMetadataManager, partitionUpsertMetadataManager,
+          handleUpsert(indexLoadingConfig, partitionUpsertOffHeapMetadataManager,
               name);
       _indexSegments.add(immutableSegment);
     }
@@ -110,12 +102,11 @@ public class UpsertRunner {
   }
 
   private static ImmutableSegmentImpl handleUpsert(IndexLoadingConfig indexLoadingConfig,
-      PartitionUpsertOffHeapMetadataManagerV2 partitionUpsertOffHeapMetadataManager,
-      PartitionUpsertMetadataManager partitionUpsertMetadataManager, String name)
+      PartitionUpsertOffHeapMetadataManager partitionUpsertOffHeapMetadataManager, String name)
       throws Exception {
     ImmutableSegmentImpl immutableSegment = (ImmutableSegmentImpl) ImmutableSegmentLoader.load(new File(INDEX_DIR, name),
         indexLoadingConfig);
-    immutableSegment.enableUpsert(partitionUpsertMetadataManager, new ThreadSafeMutableRoaringBitmap());
+    immutableSegment.enableUpsert(null, new ThreadSafeMutableRoaringBitmap());
 
     Map<String, PinotSegmentColumnReader> columnToReaderMap = new HashMap<>();
     List<String> primaryKeyColumns = Collections.singletonList(LOW_CARDINALITY_STRING_COL);

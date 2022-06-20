@@ -155,8 +155,10 @@ public class PartitionUpsertMetadataManager {
           });
     }
     // Update metrics
-    _serverMetrics.setValueOfPartitionGauge(_tableNameWithType, _partitionId, ServerGauge.UPSERT_PRIMARY_KEYS_COUNT,
-        _primaryKeyToRecordLocationMap.size());
+    if(_serverMetrics != null ) {
+      _serverMetrics.setValueOfPartitionGauge(_tableNameWithType, _partitionId, ServerGauge.UPSERT_PRIMARY_KEYS_COUNT,
+          _primaryKeyToRecordLocationMap.size());
+    }
   }
 
   /**
@@ -191,8 +193,10 @@ public class PartitionUpsertMetadataManager {
           }
         });
     // Update metrics
-    _serverMetrics.setValueOfPartitionGauge(_tableNameWithType, _partitionId, ServerGauge.UPSERT_PRIMARY_KEYS_COUNT,
-        _primaryKeyToRecordLocationMap.size());
+    if(_serverMetrics != null ) {
+      _serverMetrics.setValueOfPartitionGauge(_tableNameWithType, _partitionId, ServerGauge.UPSERT_PRIMARY_KEYS_COUNT,
+          _primaryKeyToRecordLocationMap.size());
+    }
   }
 
   /**
@@ -255,7 +259,9 @@ public class PartitionUpsertMetadataManager {
       });
     }
     // Update metrics
-    _serverMetrics.setValueOfPartitionGauge(_tableNameWithType, _partitionId, ServerGauge.UPSERT_PRIMARY_KEYS_COUNT,
-        _primaryKeyToRecordLocationMap.size());
+    if(_serverMetrics != null ) {
+      _serverMetrics.setValueOfPartitionGauge(_tableNameWithType, _partitionId, ServerGauge.UPSERT_PRIMARY_KEYS_COUNT,
+          _primaryKeyToRecordLocationMap.size());
+    }
   }
 }
