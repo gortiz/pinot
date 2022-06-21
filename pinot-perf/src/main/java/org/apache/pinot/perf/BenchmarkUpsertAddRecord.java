@@ -43,7 +43,6 @@ import org.apache.pinot.segment.local.upsert.IPartitionUpsertMetadataManager;
 import org.apache.pinot.segment.local.upsert.PartitionUpsertMetadataManager;
 import org.apache.pinot.segment.local.upsert.PartitionUpsertOffHeapMetadataManager;
 import org.apache.pinot.segment.local.upsert.PartitionUpsertRocksDBMetadataManager;
-import org.apache.pinot.segment.local.upsert.PartitionUpsertRocksDBMetadataManagerNoTransactions;
 import org.apache.pinot.segment.local.utils.RecordInfo;
 import org.apache.pinot.segment.spi.ImmutableSegment;
 import org.apache.pinot.segment.spi.IndexSegment;
@@ -85,18 +84,20 @@ import org.openjdk.jmh.runner.options.OptionsBuilder;
 
 @BenchmarkMode(Mode.AverageTime)
 @OutputTimeUnit(TimeUnit.MILLISECONDS)
-@Fork(1)
+@Fork(value = 1, jvmArgs = {"-server", "-Xmx8G", "-XX:MaxDirectMemorySize=16G"})
 @Warmup(iterations = 1, time = 20, timeUnit = TimeUnit.SECONDS)
 @Measurement(iterations = 2, time = 20, timeUnit = TimeUnit.SECONDS)
 @State(Scope.Benchmark)
 @CompilerControl(CompilerControl.Mode.DONT_INLINE)
 public class BenchmarkUpsertAddRecord {
-  @Param({"10000"})
+  @Param({"100000", "1000000"})
   private int _numRows;
+
   @Param({"10"})
   private int _numSegments;
 
-  private int _keyCardinality = 5000;
+  @Param({"1000", "100000"})
+  private int _keyCardinality;
 
   String _scenario = "EXP(0.5)";
   private List<IndexSegment> _indexSegments;
@@ -138,18 +139,18 @@ public class BenchmarkUpsertAddRecord {
     _indexSegments = new ArrayList<>();
     _indexSegmentsPerImpl = new ConcurrentHashMap<>();
     _partitionUpsertOffHeapMetadataManager = new PartitionUpsertOffHeapMetadataManager(TABLE_NAME, 0, null, null, HashFunction.NONE);
-    _partitionUpsertRocksDBMetadataManager = new PartitionUpsertRocksDBMetadataManagerNoTransactions(TABLE_NAME, 0, null, null, HashFunction.NONE);
+    //_partitionUpsertRocksDBMetadataManager = new PartitionUpsertRocksDBMetadataManagerNoTransactions(TABLE_NAME, 0, null, null, HashFunction.NONE);
     _partitionUpsertMetadataManager = new PartitionUpsertMetadataManager(TABLE_NAME, 0, null, null, HashFunction.NONE);
 
     for (int i = 0; i < _numSegments; i++) {
       String name = "segment_" + i;
       buildSegment(name);
-      enableUpsertOnSegmentAndMetadataManager(_partitionUpsertMetadataManager, name);
-      enableUpsertOnSegmentAndMetadataManager(_partitionUpsertRocksDBMetadataManager, name);
+      //enableUpsertOnSegmentAndMetadataManager(_partitionUpsertMetadataManager, name);
+      //enableUpsertOnSegmentAndMetadataManager(_partitionUpsertRocksDBMetadataManager, name);
       enableUpsertOnSegmentAndMetadataManager(_partitionUpsertOffHeapMetadataManager, name);
     }
 
-    for(GenericRow genericRow: createTestData(_numRows * 10)) {
+    for(GenericRow genericRow: createTestData(_numRows / 10)) {
       RecordInfo recordInfo = new RecordInfo(genericRow.getPrimaryKey(Collections.singletonList(LOW_CARDINALITY_STRING_COL)),  (int) _supplier.getAsLong() % _numRows, _supplier.getAsLong());
       _testData.add(recordInfo);
     }
@@ -284,7 +285,6 @@ public class BenchmarkUpsertAddRecord {
     return immutableSegment;
   }
 
-  @Benchmark
   public void rocksDBUpsert(Blackhole blackhole) {
     try {
       for (IndexSegment indexSegment : _indexSegmentsPerImpl.get(_partitionUpsertRocksDBMetadataManager)) {
@@ -298,7 +298,6 @@ public class BenchmarkUpsertAddRecord {
     }
   }
 
-  @Benchmark
   public void onHeapUpsert(Blackhole blackhole) {
     try {
       for (IndexSegment indexSegment : _indexSegmentsPerImpl.get(_partitionUpsertMetadataManager)) {

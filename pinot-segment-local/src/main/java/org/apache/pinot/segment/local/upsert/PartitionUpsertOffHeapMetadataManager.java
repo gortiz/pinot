@@ -1,7 +1,9 @@
 package org.apache.pinot.segment.local.upsert;
 
-import java.io.File;
+import com.google.common.base.Joiner;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.Iterator;
 import java.util.Objects;
 import java.util.concurrent.ConcurrentHashMap;
@@ -25,7 +27,7 @@ import org.apache.pinot.spi.utils.StringUtil;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-
+// POC for off heap upsert. Works correctly in happy path. Doesn't support partial upsert, deletion and hashing yet.
 public class PartitionUpsertOffHeapMetadataManager implements IPartitionUpsertMetadataManager  {
   private static final Logger LOGGER = LoggerFactory.getLogger(PartitionUpsertOffHeapMetadataManager.class);
   public static final int INITIAL_SEGMENT_ID = 10;
@@ -43,8 +45,9 @@ public class PartitionUpsertOffHeapMetadataManager implements IPartitionUpsertMe
   //need to create a second reverse lookup hashmap, any way to avoid it?
   final ConcurrentHashMap<Integer, Object> _segmentIdToSegmentMap = new ConcurrentHashMap<>();
   final AtomicInteger _segmentId = new AtomicInteger(INITIAL_SEGMENT_ID);
+
+  // TODO: figure out optimisation in lock usage. Might not be needed in some paths.
   private final ReentrantReadWriteLock _readWriteLock = new ReentrantReadWriteLock();
-  private final ReentrantLock _reentrantLock = new ReentrantLock();
 
   public PartitionUpsertOffHeapMetadataManager(String tableNameWithType, int partitionId, ServerMetrics serverMetrics,
       @Nullable PartialUpsertHandler partialUpsertHandler, HashFunction hashFunction)
@@ -54,22 +57,27 @@ public class PartitionUpsertOffHeapMetadataManager implements IPartitionUpsertMe
     _serverMetrics = serverMetrics;
     _partialUpsertHandler = partialUpsertHandler;
     _hashFunction = hashFunction;
-    File file = new File("/Users/kharekartik/Documents/Developer/incubator-pinot/upsert/offHeap/" + _tableNameWithType + "/" + System.currentTimeMillis());
 
-    file.mkdirs();
-    System.out.println("USING PATH: " + file.getAbsolutePath());
+    String prefix = Joiner.on("_").join("offHeapUpsert", _tableNameWithType, _partitionId);
+    Path offHeapStoreDir = Files.createTempDirectory(prefix);
 
+    LOGGER.info("Using offHeap storage dir {}", offHeapStoreDir);
     String segmentName = StringUtil.join("-", "upsert_metadata", _tableNameWithType, String.valueOf(_partitionId),
         String.valueOf(System.currentTimeMillis()));
 
     // TODO: How to determine the cardinality of primary keys so as to estimate file size
     _memoryManager =
-        new MmapMemoryManager(file.toPath().toAbsolutePath().toString(), segmentName,
+        new MmapMemoryManager(offHeapStoreDir.toAbsolutePath().toString(), segmentName,
             null);
-    _bytesOffHeapMutableDictionary = new BytesOffHeapMutableDictionary(3000, 3, _memoryManager, null, 10);
-    //_mutableForwardIndex = new VarByteSVMutableForwardIndex(FieldSpec.DataType.BYTES, _memoryManager, null, 3000, 16);
+
+    // Used to store mapping from primary key to an int id.
+    _bytesOffHeapMutableDictionary = new BytesOffHeapMutableDictionary(50000, 3, _memoryManager, null, 10);
+
+    //The record to be stored contains an integer segmentID (derived from segment), and integer doc id, and a long comparable.
+    // The comparable data type will need to be part of the constructor
+    // The offset at which the record is stored is determined by the dictId derived from the primary key using `_bytesOffHeapMutableDictionary`
     _mutableForwardIndex =
-        new FixedByteSVMultiColForwardIndex(false, 100, _memoryManager, null, new FieldSpec.DataType[]{
+        new FixedByteSVMultiColForwardIndex(false, 10000, _memoryManager, null, new FieldSpec.DataType[]{
             FieldSpec.DataType.INT, FieldSpec.DataType.INT, FieldSpec.DataType.LONG
         });
   }
@@ -158,9 +166,8 @@ public class PartitionUpsertOffHeapMetadataManager implements IPartitionUpsertMe
   }
 
   private int getPrimaryKeyId(RecordInfo recordInfo) {
-    _reentrantLock.lock();
-    int primaryKeyId = _bytesOffHeapMutableDictionary.index(recordInfo.getPrimaryKey().asBytes());
-    _reentrantLock.unlock();
+    byte[] pk = recordInfo.getPrimaryKey().asBytes();
+    int primaryKeyId = _bytesOffHeapMutableDictionary.index(pk);
     return primaryKeyId;
   }
 
@@ -225,7 +232,8 @@ public class PartitionUpsertOffHeapMetadataManager implements IPartitionUpsertMe
     _readWriteLock.readLock().lock();
     int segmentRef = _mutableForwardIndex.getInt(primaryKeyId, 0);
 
-    //TODO: insert -1 as segment ref when a primary key is removed, will lead to fragmentation in the buffer though
+    //TODO: This is just a temp hack.
+    // Insert -1 as segment ref when a primary key is removed, will lead to fragmentation in the buffer though
     if(segmentRef <= INITIAL_SEGMENT_ID || segmentRef > INITIAL_SEGMENT_ID + _segmentToSegmentIdMap.size()) {
       _readWriteLock.readLock().unlock();
       return null;

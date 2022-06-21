@@ -1,7 +1,12 @@
 package org.apache.pinot.segment.local.upsert;
 
+import com.google.common.base.Joiner;
 import com.google.common.base.Preconditions;
+import java.io.BufferedWriter;
+import java.io.ByteArrayOutputStream;
 import java.io.File;
+import java.io.FileOutputStream;
+import java.io.FileWriter;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
@@ -56,7 +61,7 @@ public class UpsertRunner {
   static int _numRows = 10000;
   static int _numSegments = 10;
   private static  List<IndexSegment> _indexSegments;
-  private static String[] lowCardinalityValues = IntStream.range(0, 10000).mapToObj(i -> "value" + i)
+  private static String[] lowCardinalityValues = IntStream.range(0, _numRows / 10).mapToObj(i -> "value" + i)
       .toArray(String[]::new);
 
   public static void main(String[] args) throws Exception {
@@ -78,27 +83,32 @@ public class UpsertRunner {
       _indexSegments.add(immutableSegment);
     }
 
+    for(IndexSegment indexSegment: _indexSegments) {
+      for (GenericRow genericRow : createTestData(_numRows / 100)) {
+        RecordInfo recordInfo = new RecordInfo(genericRow.getPrimaryKey(Collections.singletonList(LOW_CARDINALITY_STRING_COL)),
+            (int) _supplier.getAsLong() % _numRows, _supplier.getAsLong());
+        partitionUpsertMetadataManager.addRecord(indexSegment, recordInfo);
+      }
+    }
+
+    File file = new File("/Users/kharekartik/Documents/Developer/incubator-pinot/upsert/runner/", "offHeap.txt");
+    FileWriter fileWriter = new FileWriter(file);
     for (int i = 0; i < _numSegments; i++) {
       ImmutableSegmentImpl immutableSegment = (ImmutableSegmentImpl) _indexSegments.get(i);
       String name = immutableSegment.getSegmentName();
       PeekableIntIterator intIterator = immutableSegment.getValidDocIds().getMutableRoaringBitmap().getIntIterator();
-      System.out.println("SEGMENT NAME: " + name);
+      GenericRow reuse = new GenericRow();
+
       while (intIterator.hasNext()) {
         int docId = intIterator.next();
-        System.out.println(docId+ ": "
-            + immutableSegment.getRecord(docId, new GenericRow()).getValue(LOW_CARDINALITY_STRING_COL)
-        + ": " + immutableSegment.getRecord(docId, new GenericRow()).getValue(LONG_COL_NAME));
+        GenericRow record = immutableSegment.getRecord(docId, reuse);
+        String metadata = Joiner.on("::").join(name, docId,  record.getValue(LOW_CARDINALITY_STRING_COL),record.getValue(LONG_COL_NAME));
+        System.out.println(metadata);
+        fileWriter.write(metadata + "\n");
       }
     }
-
+    fileWriter.close();
     System.out.println("NUM SEGMENTS CREATED: " + _indexSegments.size());
-
-//    for(IndexSegment indexSegment: _indexSegments) {
-//      for(int i=0; i<10; i++) {
-//        Object[] pk = new Object[]{lowCardinalityValues[i % lowCardinalityValues.length]};
-//        partitionUpsertMetadataManager.addRecord(indexSegment, new RecordInfo(new PrimaryKey(pk), i, _supplier.getAsLong()));
-//      }
-//    }
     close();
   }
 
@@ -152,9 +162,9 @@ public class UpsertRunner {
   }
 
   public static void close() {
-//    for (IndexSegment indexSegment : _indexSegments) {
-//      indexSegment.destroy();
-//    }
+    for (IndexSegment indexSegment : _indexSegments) {
+      indexSegment.destroy();
+    }
     FileUtils.deleteQuietly(INDEX_DIR);
   }
 

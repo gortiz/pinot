@@ -135,7 +135,7 @@ public class BenchmarkUpsert {
       _indexSegments.add(ImmutableSegmentLoader.load(new File(INDEX_DIR, name), indexLoadingConfig));
     }
 
-    //_partitionUpsertOffHeapMetadataManager = new PartitionUpsertOffHeapMetadataManager(TABLE_NAME, 0, null, null, HashFunction.NONE);
+    _partitionUpsertOffHeapMetadataManager = new PartitionUpsertOffHeapMetadataManager(TABLE_NAME, 0, null, null, HashFunction.NONE);
     _partitionUpsertRocksDBMetadataManager = new PartitionUpsertRocksDBMetadataManager(TABLE_NAME, 0, null, null, HashFunction.NONE);
     _partitionUpsertMetadataManager = new PartitionUpsertMetadataManager(TABLE_NAME, 0, null, null, HashFunction.NONE);
 
@@ -257,6 +257,7 @@ public class BenchmarkUpsert {
     return immutableSegment;
   }
 
+  @Benchmark
   public void offHeapUpsert(Blackhole blackhole) {
     try {
       for (IndexSegment indexSegment : _indexSegments) {
