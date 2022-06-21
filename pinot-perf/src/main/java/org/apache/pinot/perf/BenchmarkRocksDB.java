@@ -1,5 +1,6 @@
 package org.apache.pinot.perf;
 
+import java.nio.ByteBuffer;
 import java.nio.file.Files;
 import java.util.Map;
 import java.util.Random;
@@ -44,14 +45,14 @@ public class BenchmarkRocksDB {
   private static final Random RANDOM = new Random();
 
   private final byte[][] _keys = new byte[NUM_VALUES][];
-  private final Integer[] _keysInt = new Integer[NUM_VALUES];
+  private final ByteBuffer[] _keysInt = new ByteBuffer[NUM_VALUES];
 
   private final byte[][] _values = new byte[NUM_VALUES][];
 
   @Param({"150000"})
   public int _cardinality;
-  private Map<byte[], byte[]> _mapStore;
-  private Map<Integer, byte[]> _treeMapStore;
+  private Map<ByteBuffer, byte[]> _mapStore;
+  private Map<ByteBuffer, byte[]> _treeMapStore;
 
   private RocksDB _rocksDB;
   private WriteOptions _writeOptions;
@@ -61,8 +62,8 @@ public class BenchmarkRocksDB {
       throws Exception {
     for (int i = 0; i < NUM_VALUES; i++) {
       int val = RANDOM.nextInt(_cardinality);
-      _keysInt[i] = val;
       _keys[i] = toBytes(val);
+      _keysInt[i] = ByteBuffer.wrap(_keys[i]);
       _values[i] = toBytes(RANDOM.nextInt());
     }
 
@@ -78,14 +79,14 @@ public class BenchmarkRocksDB {
       byte[] k = toBytes(RANDOM.nextInt(_cardinality));
       byte[] v = toBytes(RANDOM.nextInt());
       _rocksDB.put(k, v);
-      _mapStore.put(k, v);
+      _mapStore.put(ByteBuffer.wrap(k), v);
     }
   }
 
   @Benchmark
   public void benchmarkMap(Blackhole blackhole){
     for(int i = 0; i < NUM_VALUES; i++) {
-      byte[] val = _mapStore.getOrDefault(_keys[i], new byte[]{});
+      byte[] val = _mapStore.getOrDefault(_keysInt[i], new byte[]{});
       //byte[] op = _mapStore.put(_keys[i], _values[i]);
       blackhole.consume(val);
       //blackhole.consume(op);
@@ -107,7 +108,7 @@ public class BenchmarkRocksDB {
 
   public void benchmarkMapPut(Blackhole blackhole){
     for(int i = 0; i < NUM_VALUES; i++) {
-      byte[] op = _mapStore.put(_keys[i], _values[i]);
+      byte[] op = _mapStore.put(_keysInt[i], _values[i]);
       blackhole.consume(op);
     }
   }

@@ -48,6 +48,7 @@ public class PartitionUpsertOffHeapMetadataManager implements IPartitionUpsertMe
 
   // TODO: figure out optimisation in lock usage. Might not be needed in some paths.
   private final ReentrantReadWriteLock _readWriteLock = new ReentrantReadWriteLock();
+  private final ReentrantLock _dictionaryLock = new ReentrantLock();
 
   public PartitionUpsertOffHeapMetadataManager(String tableNameWithType, int partitionId, ServerMetrics serverMetrics,
       @Nullable PartialUpsertHandler partialUpsertHandler, HashFunction hashFunction)
@@ -166,8 +167,10 @@ public class PartitionUpsertOffHeapMetadataManager implements IPartitionUpsertMe
   }
 
   private int getPrimaryKeyId(RecordInfo recordInfo) {
+    _dictionaryLock.lock();
     byte[] pk = recordInfo.getPrimaryKey().asBytes();
     int primaryKeyId = _bytesOffHeapMutableDictionary.index(pk);
+    _dictionaryLock.unlock();
     return primaryKeyId;
   }
 
