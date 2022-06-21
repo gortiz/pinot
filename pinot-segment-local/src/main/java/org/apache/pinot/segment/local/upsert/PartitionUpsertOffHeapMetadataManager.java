@@ -54,7 +54,7 @@ public class PartitionUpsertOffHeapMetadataManager implements IPartitionUpsertMe
     _serverMetrics = serverMetrics;
     _partialUpsertHandler = partialUpsertHandler;
     _hashFunction = hashFunction;
-    File file = new File("/Users/kharekartik/Documents/Developer/pinot/upsert/offHeap/" + _tableNameWithType + "/" + System.currentTimeMillis());
+    File file = new File("/Users/kharekartik/Documents/Developer/incubator-pinot/upsert/offHeap/" + _tableNameWithType + "/" + System.currentTimeMillis());
 
     file.mkdirs();
     System.out.println("USING PATH: " + file.getAbsolutePath());
@@ -72,7 +72,6 @@ public class PartitionUpsertOffHeapMetadataManager implements IPartitionUpsertMe
         new FixedByteSVMultiColForwardIndex(false, 100, _memoryManager, null, new FieldSpec.DataType[]{
             FieldSpec.DataType.INT, FieldSpec.DataType.INT, FieldSpec.DataType.LONG
         });
-
   }
 
   /**

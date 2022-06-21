@@ -83,7 +83,8 @@ import static org.apache.pinot.segment.spi.V1Constants.MetadataKeys.Segment.*;
  * Segment creator which writes data in a columnar form.
  */
 // TODO: check resource leaks
-public class SegmentColumnarIndexCreator implements SegmentCreator {
+public class
+SegmentColumnarIndexCreator implements SegmentCreator {
   // TODO Refactor class name to match interface name
   private static final Logger LOGGER = LoggerFactory.getLogger(SegmentColumnarIndexCreator.class);
   // Allow at most 512 characters for the metadata property

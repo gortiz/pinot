@@ -53,10 +53,10 @@ public class UpsertRunner {
 
   private static LongSupplier _supplier;
   static String _scenario = "EXP(0.5)";
-  static int _numRows = 10;
+  static int _numRows = 10000;
   static int _numSegments = 10;
   private static  List<IndexSegment> _indexSegments;
-  private static String[] lowCardinalityValues = IntStream.range(0, 10).mapToObj(i -> "value" + i)
+  private static String[] lowCardinalityValues = IntStream.range(0, 10000).mapToObj(i -> "value" + i)
       .toArray(String[]::new);
 
   public static void main(String[] args) throws Exception {
@@ -67,7 +67,7 @@ public class UpsertRunner {
     IndexLoadingConfig indexLoadingConfig = new IndexLoadingConfig();
     IPartitionUpsertMetadataManager partitionUpsertMetadataManager =
         PartitionUpsertMetadataManagerFactory.getPartitionUpsertMetadataManager(TABLE_NAME, 0, null, null,
-            HashFunction.NONE, PartitionUpsertMetadataManagerFactory.MetadataStore.ROCKSDB);
+            HashFunction.NONE, PartitionUpsertMetadataManagerFactory.MetadataStore.MMAP);
 
     for (int i = 0; i < _numSegments; i++) {
       String name = "segment_" + i;

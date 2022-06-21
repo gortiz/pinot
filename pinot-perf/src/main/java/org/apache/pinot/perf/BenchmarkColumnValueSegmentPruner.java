@@ -75,8 +75,8 @@ import org.openjdk.jmh.runner.options.OptionsBuilder;
 @BenchmarkMode(Mode.AverageTime)
 @OutputTimeUnit(TimeUnit.MICROSECONDS)
 @Fork(1)
-@Warmup(iterations = 5, time = 2)
-@Measurement(iterations = 5, time = 2)
+@Warmup(iterations = 5, time = 60)
+@Measurement(iterations = 2, time = 60)
 @State(Scope.Benchmark)
 public class BenchmarkColumnValueSegmentPruner {
 
@@ -84,7 +84,7 @@ public class BenchmarkColumnValueSegmentPruner {
 
   @Param({"10"})
   private int _numRows;
-  @Param({"10", "100", "1000"})
+  @Param({"10"})
   private int _numSegments;
 
   private String _query = QUERY_1;

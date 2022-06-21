@@ -132,11 +132,17 @@ public class FixedByteSVMultiColForwardIndex implements MutableForwardIndex {
   }
 
   public int getInt(int docId, int col) {
+    if(docId >= _capacityInRows) {
+      return -1;
+    }
     int bufferId = getBufferId(docId);
     return _readers.get(bufferId).getInt(docId, col);
   }
 
   public long getLong(int docId, int col) {
+    if(docId >= _capacityInRows) {
+      return -1;
+    }
     int bufferId = getBufferId(docId);
     return _readers.get(bufferId).getLong(docId, col);
   }

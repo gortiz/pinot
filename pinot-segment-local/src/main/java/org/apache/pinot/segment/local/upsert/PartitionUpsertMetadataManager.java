@@ -138,10 +138,7 @@ public class PartitionUpsertMetadataManager implements IPartitionUpsertMetadataM
               // Update the record location when getting a newer comparison value, or the value is the same as the
               // current value, but the segment has a larger sequence number (the segment is newer than the current
               // segment).
-              if (comparisonResult > 0 || (comparisonResult == 0 && LLCSegmentName.isLowLevelConsumerSegmentName(
-                  segmentName) && LLCSegmentName.isLowLevelConsumerSegmentName(currentSegmentName)
-                  && LLCSegmentName.getSequenceNumber(segmentName) > LLCSegmentName.getSequenceNumber(
-                  currentSegmentName))) {
+              if (comparisonResult > 0) {
                 Objects.requireNonNull(currentSegment.getValidDocIds()).remove(currentRecordLocation.getDocId());
                 validDocIds.add(recordInfo.getDocId());
                 return new RecordLocation(segment, recordInfo.getDocId(), recordInfo.getComparisonValue());
