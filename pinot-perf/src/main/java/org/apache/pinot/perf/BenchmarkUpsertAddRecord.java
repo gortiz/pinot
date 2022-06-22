@@ -18,8 +18,11 @@
  */
 package org.apache.pinot.perf;
 
+import com.google.common.base.Joiner;
 import com.google.common.base.Preconditions;
 import java.io.File;
+import java.io.FileWriter;
+import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
@@ -41,10 +44,9 @@ import org.apache.pinot.segment.local.segment.readers.GenericRowRecordReader;
 import org.apache.pinot.segment.local.segment.readers.PinotSegmentColumnReader;
 import org.apache.pinot.segment.local.upsert.IPartitionUpsertMetadataManager;
 import org.apache.pinot.segment.local.upsert.PartitionUpsertMetadataManager;
-import org.apache.pinot.segment.local.upsert.PartitionUpsertOffHeapMetadataManager;
 import org.apache.pinot.segment.local.upsert.PartitionUpsertRocksDBMetadataManager;
+import org.apache.pinot.segment.local.upsert.PartitionUpsertRocksDBMetadataManagerNoTransaction;
 import org.apache.pinot.segment.local.utils.RecordInfo;
-import org.apache.pinot.segment.spi.ImmutableSegment;
 import org.apache.pinot.segment.spi.IndexSegment;
 import org.apache.pinot.segment.spi.creator.SegmentGeneratorConfig;
 import org.apache.pinot.segment.spi.index.mutable.ThreadSafeMutableRoaringBitmap;
@@ -64,7 +66,6 @@ import org.openjdk.jmh.annotations.Benchmark;
 import org.openjdk.jmh.annotations.BenchmarkMode;
 import org.openjdk.jmh.annotations.CompilerControl;
 import org.openjdk.jmh.annotations.Fork;
-import org.openjdk.jmh.annotations.Level;
 import org.openjdk.jmh.annotations.Measurement;
 import org.openjdk.jmh.annotations.Mode;
 import org.openjdk.jmh.annotations.OutputTimeUnit;
@@ -73,30 +74,31 @@ import org.openjdk.jmh.annotations.Scope;
 import org.openjdk.jmh.annotations.Setup;
 import org.openjdk.jmh.annotations.State;
 import org.openjdk.jmh.annotations.TearDown;
-import org.openjdk.jmh.annotations.Threads;
 import org.openjdk.jmh.annotations.Warmup;
+import org.openjdk.jmh.infra.BenchmarkParams;
 import org.openjdk.jmh.infra.Blackhole;
 import org.openjdk.jmh.profile.JavaFlightRecorderProfiler;
 import org.openjdk.jmh.runner.Runner;
 import org.openjdk.jmh.runner.options.ChainedOptionsBuilder;
 import org.openjdk.jmh.runner.options.OptionsBuilder;
+import org.roaringbitmap.PeekableIntIterator;
 
 
 @BenchmarkMode(Mode.AverageTime)
 @OutputTimeUnit(TimeUnit.MILLISECONDS)
 @Fork(value = 1, jvmArgs = {"-server", "-Xmx8G", "-XX:MaxDirectMemorySize=16G"})
-@Warmup(iterations = 1, time = 20, timeUnit = TimeUnit.SECONDS)
-@Measurement(iterations = 2, time = 20, timeUnit = TimeUnit.SECONDS)
+@Warmup(iterations = 0, time = 60, timeUnit = TimeUnit.SECONDS)
+@Measurement(iterations = 2, time = 60, timeUnit = TimeUnit.SECONDS)
 @State(Scope.Benchmark)
 @CompilerControl(CompilerControl.Mode.DONT_INLINE)
 public class BenchmarkUpsertAddRecord {
-  @Param({"100000", "1000000"})
+  @Param({"100000"})
   private int _numRows;
 
   @Param({"10"})
   private int _numSegments;
 
-  @Param({"1000", "100000"})
+  @Param({"50000"})
   private int _keyCardinality;
 
   String _scenario = "EXP(0.5)";
@@ -127,7 +129,9 @@ public class BenchmarkUpsertAddRecord {
   private static final String LOW_CARDINALITY_STRING_COL = "LOW_CARDINALITY_STRING_COL";
   private IPartitionUpsertMetadataManager _partitionUpsertOffHeapMetadataManager;
   private IPartitionUpsertMetadataManager _partitionUpsertRocksDBMetadataManager;
+  private IPartitionUpsertMetadataManager _partitionUpsertRocksDBMetadataManagerNoTransaction;
   private IPartitionUpsertMetadataManager _partitionUpsertMetadataManager;
+  private transient int _runNumber = 0;
 
   @Setup
   public void setUp()
@@ -138,22 +142,26 @@ public class BenchmarkUpsertAddRecord {
 
     _indexSegments = new ArrayList<>();
     _indexSegmentsPerImpl = new ConcurrentHashMap<>();
-    _partitionUpsertOffHeapMetadataManager = new PartitionUpsertOffHeapMetadataManager(TABLE_NAME, 0, null, null, HashFunction.NONE);
-    //_partitionUpsertRocksDBMetadataManager = new PartitionUpsertRocksDBMetadataManagerNoTransactions(TABLE_NAME, 0, null, null, HashFunction.NONE);
+//    _partitionUpsertOffHeapMetadataManager = new PartitionUpsertOffHeapMetadataManager(TABLE_NAME, 0, null, null, HashFunction.NONE);
+    _partitionUpsertRocksDBMetadataManager = new PartitionUpsertRocksDBMetadataManager(TABLE_NAME, 0, null, null, HashFunction.NONE);
+    _partitionUpsertRocksDBMetadataManagerNoTransaction = new PartitionUpsertRocksDBMetadataManagerNoTransaction(TABLE_NAME, 0, null, null, HashFunction.NONE);
     _partitionUpsertMetadataManager = new PartitionUpsertMetadataManager(TABLE_NAME, 0, null, null, HashFunction.NONE);
 
     for (int i = 0; i < _numSegments; i++) {
       String name = "segment_" + i;
       buildSegment(name);
-      //enableUpsertOnSegmentAndMetadataManager(_partitionUpsertMetadataManager, name);
-      //enableUpsertOnSegmentAndMetadataManager(_partitionUpsertRocksDBMetadataManager, name);
-      enableUpsertOnSegmentAndMetadataManager(_partitionUpsertOffHeapMetadataManager, name);
+      enableUpsertOnSegmentAndMetadataManager(_partitionUpsertMetadataManager, name);
+      enableUpsertOnSegmentAndMetadataManager(_partitionUpsertRocksDBMetadataManager, name);
+      enableUpsertOnSegmentAndMetadataManager(_partitionUpsertRocksDBMetadataManagerNoTransaction, name);
+//      enableUpsertOnSegmentAndMetadataManager(_partitionUpsertOffHeapMetadataManager, name);
     }
 
     for(GenericRow genericRow: createTestData(_numRows / 10)) {
       RecordInfo recordInfo = new RecordInfo(genericRow.getPrimaryKey(Collections.singletonList(LOW_CARDINALITY_STRING_COL)),  (int) _supplier.getAsLong() % _numRows, _supplier.getAsLong());
       _testData.add(recordInfo);
     }
+
+    _runNumber++;
   }
 
   private void enableUpsertOnSegmentAndMetadataManager(IPartitionUpsertMetadataManager partitionUpsertMetadataManager, String name)
@@ -175,10 +183,48 @@ public class BenchmarkUpsertAddRecord {
   }
 
   @TearDown
-  public void tearDown() {
+  public void tearDown(BenchmarkParams benchmarkParams) {
     for (IndexSegment indexSegment : _indexSegments) {
       indexSegment.destroy();
     }
+
+    String dirPath = "/Users/kharekartik/Documents/Developer/incubator-pinot/upsert/benchmark-output/" + benchmarkParams.getBenchmark();
+    File dir = new File(dirPath);
+    dir.mkdirs();
+
+    for(Map.Entry<IPartitionUpsertMetadataManager, List<IndexSegment>> entry: _indexSegmentsPerImpl.entrySet()) {
+      File file = new File(dirPath, entry.getKey().getClass().getSimpleName() + ".txt");
+      try {
+        FileWriter fileWriter = new FileWriter(file);
+        for (IndexSegment indexSegment : entry.getValue()) {
+          ImmutableSegmentImpl immutableSegment = (ImmutableSegmentImpl) indexSegment;
+          String name = immutableSegment.getSegmentName();
+          PeekableIntIterator intIterator = immutableSegment.getValidDocIds().getMutableRoaringBitmap().getIntIterator();
+          GenericRow reuse = new GenericRow();
+
+          while (intIterator.hasNext()) {
+            int docId = intIterator.next();
+            GenericRow record = immutableSegment.getRecord(docId, reuse);
+            String metadata = Joiner.on("::").join(name, docId, record.getValue(LOW_CARDINALITY_STRING_COL), record.getValue(LONG_COL_NAME));
+            //System.out.println(metadata);
+            fileWriter.write(metadata + "\n");
+          }
+        }
+        fileWriter.close();
+      } catch (IOException e){
+        System.out.println("Error occurred while creating output file: " + e.getMessage());
+      }
+    }
+
+    for(List<IndexSegment> indexSegmentList: _indexSegmentsPerImpl.values()){
+      for(IndexSegment indexSegment: indexSegmentList) {
+        indexSegment.destroy();
+      }
+    }
+
+    ((PartitionUpsertRocksDBMetadataManager) _partitionUpsertRocksDBMetadataManager).close();
+    ((PartitionUpsertRocksDBMetadataManagerNoTransaction) _partitionUpsertRocksDBMetadataManagerNoTransaction).close();
+
     FileUtils.deleteQuietly(INDEX_DIR);
   }
 
@@ -298,6 +344,20 @@ public class BenchmarkUpsertAddRecord {
     }
   }
 
+  @Benchmark
+  public void rocksDBUpsertNoTransaction(Blackhole blackhole) {
+    try {
+      for (IndexSegment indexSegment : _indexSegmentsPerImpl.get(_partitionUpsertRocksDBMetadataManagerNoTransaction)) {
+        for(RecordInfo recordInfo: _testData) {
+          _partitionUpsertRocksDBMetadataManagerNoTransaction.addRecord(indexSegment, recordInfo);
+          blackhole.consume(recordInfo);
+        }
+      }
+    } catch (Exception e){
+      //e.printStackTrace();
+    }
+  }
+
   public void onHeapUpsert(Blackhole blackhole) {
     try {
       for (IndexSegment indexSegment : _indexSegmentsPerImpl.get(_partitionUpsertMetadataManager)) {
@@ -311,7 +371,6 @@ public class BenchmarkUpsertAddRecord {
     }
   }
 
-  @Benchmark
   public void offHeapUpsert(Blackhole blackhole) {
     try {
       for (IndexSegment indexSegment : _indexSegmentsPerImpl.get(_partitionUpsertOffHeapMetadataManager)) {
