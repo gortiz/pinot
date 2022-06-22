@@ -17,6 +17,7 @@ import org.openjdk.jmh.annotations.Param;
 import org.openjdk.jmh.annotations.Scope;
 import org.openjdk.jmh.annotations.Setup;
 import org.openjdk.jmh.annotations.State;
+import org.openjdk.jmh.annotations.TearDown;
 import org.openjdk.jmh.annotations.Warmup;
 import org.openjdk.jmh.infra.Blackhole;
 import org.openjdk.jmh.profile.JavaFlightRecorderProfiler;
@@ -49,7 +50,7 @@ public class BenchmarkRocksDB {
 
   private final byte[][] _values = new byte[NUM_VALUES][];
 
-  @Param({"150000"})
+  @Param({"150000", "20000000"})
   public int _cardinality;
   private Map<ByteBuffer, byte[]> _mapStore;
   private Map<ByteBuffer, byte[]> _treeMapStore;
@@ -71,16 +72,31 @@ public class BenchmarkRocksDB {
     _treeMapStore = new TreeMap<>();
     Options options = new Options();
     options.setCreateIfMissing(true);
-    _rocksDB = RocksDB.open (options, Files.createTempDirectory("benchmark").toAbsolutePath().toString());
+    options.optimizeForPointLookup(512);
+//    options.setUseFsync(false);
+//    options.setMaxBackgroundJobs(4);
+
+    _rocksDB = RocksDB.open(options, Files.createTempDirectory("benchmark").toAbsolutePath().toString());
     _writeOptions = new WriteOptions();
     _writeOptions.setDisableWAL(true);
 
-    for(int i = 0; i<NUM_VALUES/10;i++) {
+    for(int i = 0; i<NUM_VALUES;i++) {
       byte[] k = toBytes(RANDOM.nextInt(_cardinality));
       byte[] v = toBytes(RANDOM.nextInt());
       _rocksDB.put(k, v);
       _mapStore.put(ByteBuffer.wrap(k), v);
     }
+  }
+
+  @TearDown
+  public void tearDown(){
+    try {
+      System.out.println(_rocksDB.getProperty("rocksdb.stats"));
+    } catch (Exception e){
+
+    }
+    _mapStore.clear();
+    _rocksDB.close();
   }
 
   @Benchmark
