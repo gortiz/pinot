@@ -58,7 +58,7 @@ public class UpsertRunner {
 
   private static LongSupplier _supplier;
   static String _scenario = "EXP(0.5)";
-  static int _numRows = 10000;
+  static int _numRows = 1000;
   static int _numSegments = 10;
   private static  List<IndexSegment> _indexSegments;
   private static String[] lowCardinalityValues = IntStream.range(0, _numRows / 10).mapToObj(i -> "value" + i)
@@ -72,7 +72,7 @@ public class UpsertRunner {
     IndexLoadingConfig indexLoadingConfig = new IndexLoadingConfig();
     IPartitionUpsertMetadataManager partitionUpsertMetadataManager =
         PartitionUpsertMetadataManagerFactory.getPartitionUpsertMetadataManager(TABLE_NAME, 0, null, null,
-            HashFunction.NONE, PartitionUpsertMetadataManagerFactory.MetadataStore.MMAP);
+            HashFunction.NONE, PartitionUpsertMetadataManagerFactory.MetadataStore.ROCKSDB);
 
     for (int i = 0; i < _numSegments; i++) {
       String name = "segment_" + i;
@@ -91,6 +91,9 @@ public class UpsertRunner {
       }
     }
 
+    File dir = new File("/Users/kharekartik/Documents/Developer/incubator-pinot/upsert/runner/");
+    dir.mkdirs();
+
     File file = new File("/Users/kharekartik/Documents/Developer/incubator-pinot/upsert/runner/", "offHeap.txt");
     FileWriter fileWriter = new FileWriter(file);
     for (int i = 0; i < _numSegments; i++) {
@@ -103,7 +106,7 @@ public class UpsertRunner {
         int docId = intIterator.next();
         GenericRow record = immutableSegment.getRecord(docId, reuse);
         String metadata = Joiner.on("::").join(name, docId,  record.getValue(LOW_CARDINALITY_STRING_COL),record.getValue(LONG_COL_NAME));
-        System.out.println(metadata);
+        //System.out.println(metadata);
         fileWriter.write(metadata + "\n");
       }
     }

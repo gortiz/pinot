@@ -1,8 +1,8 @@
 package org.apache.pinot.segment.local.upsert;
 
+import com.google.common.base.Joiner;
 import java.io.Closeable;
 import java.io.File;
-import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -11,34 +11,26 @@ import java.util.Objects;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
 import javax.annotation.Nullable;
-import org.apache.pinot.common.metrics.ServerGauge;
+import javax.annotation.concurrent.NotThreadSafe;
+import org.apache.commons.lang.NotImplementedException;
 import org.apache.pinot.common.metrics.ServerMetrics;
-import org.apache.pinot.common.utils.FileUtils;
-import org.apache.pinot.common.utils.LLCSegmentName;
-import org.apache.pinot.segment.local.utils.HashUtils;
 import org.apache.pinot.segment.local.utils.RecordInfo;
 import org.apache.pinot.segment.spi.IndexSegment;
 import org.apache.pinot.segment.spi.index.mutable.ThreadSafeMutableRoaringBitmap;
 import org.apache.pinot.spi.config.table.HashFunction;
 import org.apache.pinot.spi.data.readers.GenericRow;
-import org.apache.pinot.spi.utils.StringUtil;
 import org.rocksdb.BlockBasedTableConfig;
-import org.rocksdb.BloomFilter;
-import org.rocksdb.DBOptions;
-import org.rocksdb.MemTableConfig;
+import org.rocksdb.InfoLogLevel;
 import org.rocksdb.Options;
-import org.rocksdb.OptionsUtil;
 import org.rocksdb.ReadOptions;
 import org.rocksdb.RocksDB;
 import org.rocksdb.RocksDBException;
-import org.rocksdb.Transaction;
-import org.rocksdb.TransactionDB;
-import org.rocksdb.TransactionDBOptions;
 import org.rocksdb.WriteOptions;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 
+@NotThreadSafe
 public class PartitionUpsertRocksDBMetadataManager implements IPartitionUpsertMetadataManager, Closeable {
   private static final Logger LOGGER = LoggerFactory.getLogger(PartitionUpsertRocksDBMetadataManager.class);
 
@@ -47,13 +39,14 @@ public class PartitionUpsertRocksDBMetadataManager implements IPartitionUpsertMe
   private final ServerMetrics _serverMetrics;
   private final PartialUpsertHandler _partialUpsertHandler;
   private final HashFunction _hashFunction;
-  private final TransactionDB _rocksDB;
-  final ConcurrentHashMap<Object, Integer> _segmentToSegmentIdMap = new ConcurrentHashMap<>();
+  private final ConcurrentHashMap<Object, Integer> _segmentToSegmentIdMap = new ConcurrentHashMap<>();
   //need to create a second reverse lookup hashmap, any way to avoid it?
-  final ConcurrentHashMap<Integer, Object> _segmentIdToSegmentMap = new ConcurrentHashMap<>();
-  final AtomicInteger _segmentId = new AtomicInteger();
+  private final ConcurrentHashMap<Integer, Object> _segmentIdToSegmentMap = new ConcurrentHashMap<>();
+  private final AtomicInteger _segmentId = new AtomicInteger();
   private final WriteOptions _writeOptions;
   private final ReadOptions _readOptions;
+
+  private final RocksDB _rocksDB;
 
   public PartitionUpsertRocksDBMetadataManager(String tableNameWithType, int partitionId, ServerMetrics serverMetrics,
       @Nullable PartialUpsertHandler partialUpsertHandler, HashFunction hashFunction)
@@ -63,24 +56,52 @@ public class PartitionUpsertRocksDBMetadataManager implements IPartitionUpsertMe
     _serverMetrics = serverMetrics;
     _partialUpsertHandler = partialUpsertHandler;
     _hashFunction = hashFunction;
-    File file = new File("/Users/kharekartik/Documents/Developer/incubator-pinot/upsert/rocksDB/" + _tableNameWithType + "/" + System.currentTimeMillis());
-    file.mkdirs();
-    System.out.println("USING PATH: " + file.getAbsolutePath());
+
+    //TODO: Needs to be changed to a configurable location
+    String dirPrefix = Joiner.on("_").join(PartitionUpsertRocksDBMetadataManager.class.getSimpleName(), _tableNameWithType, _partitionId);
+    Path tmpDir = Files.createTempDirectory(dirPrefix);
+    LOGGER.info("Using storage path for rocksdb {}", tmpDir);
+
+    Options options = getOptimisedConfigForPointLookup();
+    _rocksDB = RocksDB.open(options, tmpDir.toAbsolutePath().toString());
+    _readOptions = new ReadOptions();
+    _writeOptions = new WriteOptions();
+
+    // Allows for faster puts while trading off recoverability in case of failure.
+    _writeOptions.setDisableWAL(true);
+  }
+
+  /**
+   * #ifndef ROCKSDB_LITE
+   * ColumnFamilyOptions* ColumnFamilyOptions::OptimizeForPointLookup(
+   *     uint64_t block_cache_size_mb) {
+   *   BlockBasedTableOptions block_based_options;
+   *   block_based_options.data_block_index_type =
+   *       BlockBasedTableOptions::kDataBlockBinaryAndHash;
+   *   block_based_options.data_block_hash_table_util_ratio = 0.75;
+   *   block_based_options.filter_policy.reset(NewBloomFilterPolicy(10));
+   *   block_based_options.block_cache =
+   *       NewLRUCache(static_cast<size_t>(block_cache_size_mb * 1024 * 1024));
+   *   table_factory.reset(new BlockBasedTableFactory(block_based_options));
+   *   memtable_prefix_bloom_size_ratio = 0.02;
+   *   memtable_whole_key_filtering = true;
+   *   return this;
+   * }
+   * @return
+   */
+  private Options getOptimisedConfigForPointLookup() {
     Options dbOptions = new Options();
     dbOptions.setCreateIfMissing(true);
 
     BlockBasedTableConfig blockBasedTableConfig = new BlockBasedTableConfig();
-    blockBasedTableConfig.setFilterPolicy(new BloomFilter(10));
-
+    blockBasedTableConfig.setFormatVersion(5); // using latest file format
     dbOptions.setTableFormatConfig(blockBasedTableConfig);
 
-    _rocksDB = TransactionDB.open(dbOptions, new TransactionDBOptions(),
-        file.toPath().toAbsolutePath().toString());
-
-    _writeOptions = new WriteOptions();
-    _writeOptions.setDisableWAL(true);
-
-    _readOptions = new ReadOptions();
+    dbOptions.optimizeForPointLookup(1024); // using cache of 1GB and hash based index
+    dbOptions.setMaxOpenFiles(-1); // allow multiple sstable files to be opened, good when you have to do random lreads
+    dbOptions.setInfoLogLevel(InfoLogLevel.HEADER_LEVEL); // disable logging
+    dbOptions.setStatsDumpPeriodSec(0); // disable dumping rocksDB stats in logs
+    return dbOptions;
   }
 
   /**
@@ -89,26 +110,20 @@ public class PartitionUpsertRocksDBMetadataManager implements IPartitionUpsertMe
   @Override
   public void addSegment(IndexSegment segment, Iterator<RecordInfo> recordInfoIterator) {
     String segmentName = segment.getSegmentName();
-    LOGGER.info("Adding upsert metadata for segment: {}", segmentName);
-    int segmentId = _segmentToSegmentIdMap.computeIfAbsent(segment, (segmentObj) -> {
-      Integer newSegmentId = _segmentId.incrementAndGet();
-      _segmentIdToSegmentMap.put(newSegmentId, segment);
-      return newSegmentId;
-    });
+    int segmentId = getSegmentId(segment);
 
     ThreadSafeMutableRoaringBitmap validDocIds = Objects.requireNonNull(segment.getValidDocIds());
     while (recordInfoIterator.hasNext()) {
       RecordInfo recordInfo = recordInfoIterator.next();
-      try (Transaction txn = _rocksDB.beginTransaction(_writeOptions)) {
+      try {
         byte[] key = ((String) recordInfo.getPrimaryKey().getValues()[0]).getBytes(StandardCharsets.UTF_8);
-        byte[] value = txn.get(_readOptions, key);
+        byte[] value = _rocksDB.get(_readOptions, key);
 
         if (value != null) {
-          RecordLocationRef currentRecordLocation = RecordLocationSerDe.deserialize(value);
+          RecordLocationWithSegmentId currentRecordLocation = RecordLocationSerDe.deserialize(value);
 
           // Existing primary key
-          IndexSegment currentSegment =
-              (IndexSegment) _segmentIdToSegmentMap.get(currentRecordLocation.getSegmentRef());
+          IndexSegment currentSegment = (IndexSegment) _segmentIdToSegmentMap.get(currentRecordLocation.getSegmentId());
           int comparisonResult = recordInfo.getComparisonValue().compareTo(currentRecordLocation.getComparisonValue());
 
           // The current record is in the same segment
@@ -117,10 +132,9 @@ public class PartitionUpsertRocksDBMetadataManager implements IPartitionUpsertMe
           if (segment == currentSegment) {
             if (comparisonResult >= 0) {
               validDocIds.replace(currentRecordLocation.getDocId(), recordInfo.getDocId());
-              RecordLocationRef newRecordLocationRef =
-                  new RecordLocationRef(segmentId, recordInfo.getDocId(), recordInfo.getComparisonValue());
-              txn.put(key, RecordLocationSerDe.serialize(newRecordLocationRef));
-              txn.commit();
+              RecordLocationWithSegmentId newRecordLocationWithSegmentId =
+                  new RecordLocationWithSegmentId(segmentId, recordInfo.getDocId(), recordInfo.getComparisonValue());
+              _rocksDB.put(_writeOptions, key, RecordLocationSerDe.serialize(newRecordLocationWithSegmentId));
               continue;
             } else {
               continue;
@@ -136,10 +150,9 @@ public class PartitionUpsertRocksDBMetadataManager implements IPartitionUpsertMe
           if (segmentName.equals(currentSegmentName)) {
             if (comparisonResult >= 0) {
               validDocIds.add(recordInfo.getDocId());
-              RecordLocationRef newRecordLocationRef =
-                  new RecordLocationRef(segmentId, recordInfo.getDocId(), recordInfo.getComparisonValue());
-              txn.put(key, RecordLocationSerDe.serialize(newRecordLocationRef));
-              txn.commit();
+              RecordLocationWithSegmentId newRecordLocationWithSegmentId =
+                  new RecordLocationWithSegmentId(segmentId, recordInfo.getDocId(), recordInfo.getComparisonValue());
+              _rocksDB.put(_writeOptions, key, RecordLocationSerDe.serialize(newRecordLocationWithSegmentId));
               continue;
             } else {
               continue;
@@ -153,20 +166,19 @@ public class PartitionUpsertRocksDBMetadataManager implements IPartitionUpsertMe
           if (comparisonResult > 0) {
             Objects.requireNonNull(currentSegment.getValidDocIds()).remove(currentRecordLocation.getDocId());
             validDocIds.add(recordInfo.getDocId());
-            RecordLocationRef newRecordLocationRef =
-                new RecordLocationRef(segmentId, recordInfo.getDocId(), recordInfo.getComparisonValue());
-            txn.put(key, RecordLocationSerDe.serialize(newRecordLocationRef));
+            RecordLocationWithSegmentId newRecordLocationWithSegmentId =
+                new RecordLocationWithSegmentId(segmentId, recordInfo.getDocId(), recordInfo.getComparisonValue());
+            _rocksDB.put(_writeOptions, key, RecordLocationSerDe.serialize(newRecordLocationWithSegmentId));
           } else {
             //
           }
         } else {
           // New primary key
           validDocIds.add(recordInfo.getDocId());
-          RecordLocationRef newRecordLocationRef =
-              new RecordLocationRef(segmentId, recordInfo.getDocId(), recordInfo.getComparisonValue());
-          txn.put(key, RecordLocationSerDe.serialize(newRecordLocationRef));
+          RecordLocationWithSegmentId newRecordLocationWithSegmentId =
+              new RecordLocationWithSegmentId(segmentId, recordInfo.getDocId(), recordInfo.getComparisonValue());
+          _rocksDB.put(_writeOptions, key, RecordLocationSerDe.serialize(newRecordLocationWithSegmentId));
         }
-        txn.commit();
       } catch (Exception e) {
         e.printStackTrace();
       }
@@ -179,64 +191,85 @@ public class PartitionUpsertRocksDBMetadataManager implements IPartitionUpsertMe
   @Override
   public void addRecord(IndexSegment segment, RecordInfo recordInfo) {
     ThreadSafeMutableRoaringBitmap validDocIds = Objects.requireNonNull(segment.getValidDocIds());
+
+    try {
+      byte[] key = ((String) recordInfo.getPrimaryKey().getValues()[0]).getBytes(StandardCharsets.UTF_8);
+
+      // keyMayExist does a probablistic check for a key, can return false positives but no false negatives
+      // helps to avoid expensive gets if key doesn't exist in DB
+      boolean keyMayExist = _rocksDB.keyMayExist(_readOptions, key, null);
+      if (keyMayExist) {
+        byte[] value = _rocksDB.get(_readOptions, key);
+        if (value != null) {
+
+          RecordLocationWithSegmentId currentRecordLocation = RecordLocationSerDe.deserialize(value);
+          if (recordInfo.getComparisonValue().compareTo(currentRecordLocation.getComparisonValue()) >= 0) {
+            IndexSegment currentSegment =
+                (IndexSegment) _segmentIdToSegmentMap.get(currentRecordLocation.getSegmentId());
+            int currentDocId = currentRecordLocation.getDocId();
+            if (segment == currentSegment) {
+              validDocIds.replace(currentDocId, recordInfo.getDocId());
+            } else {
+              Objects.requireNonNull(currentSegment.getValidDocIds()).remove(currentDocId);
+              validDocIds.add(recordInfo.getDocId());
+            }
+            int segmentId = getSegmentId(segment);
+            RecordLocationWithSegmentId newRecordLocationWithSegmentId =
+                new RecordLocationWithSegmentId(segmentId, recordInfo.getDocId(), recordInfo.getComparisonValue());
+            _rocksDB.put(_writeOptions, key, RecordLocationSerDe.serialize(newRecordLocationWithSegmentId));
+          } else {
+            //txn.put(key, RecordLocationSerDe.serialize(currentRecordLocation));
+          }
+        } else {
+          validDocIds.add(recordInfo.getDocId());
+          int segmentId = getSegmentId(segment);
+          RecordLocationWithSegmentId recordLocationWithSegmentId =
+              new RecordLocationWithSegmentId(segmentId, recordInfo.getDocId(), recordInfo.getComparisonValue());
+          _rocksDB.put(_writeOptions, key, RecordLocationSerDe.serialize(recordLocationWithSegmentId));
+        }
+      } else {
+        validDocIds.add(recordInfo.getDocId());
+        int segmentId = getSegmentId(segment);
+        RecordLocationWithSegmentId recordLocationWithSegmentId =
+            new RecordLocationWithSegmentId(segmentId, recordInfo.getDocId(), recordInfo.getComparisonValue());
+        _rocksDB.put(_writeOptions, key, RecordLocationSerDe.serialize(recordLocationWithSegmentId));
+      }
+    } catch (RocksDBException rocksDBException) {
+      // log error
+      rocksDBException.printStackTrace();
+    }
+  }
+
+  private int getSegmentId(IndexSegment segment) {
     int segmentId = _segmentToSegmentIdMap.computeIfAbsent(segment, (segmentObj) -> {
       Integer newSegmentId = _segmentId.incrementAndGet();
       _segmentIdToSegmentMap.put(newSegmentId, segment);
       return newSegmentId;
     });
-
-    try (Transaction txn = _rocksDB.beginTransaction(_writeOptions)) {
-      byte[] key = ((String) recordInfo.getPrimaryKey().getValues()[0]).getBytes(StandardCharsets.UTF_8);
-      byte[] value = txn.get(_readOptions, key);
-
-      if (value != null) {
-
-        RecordLocationRef currentRecordLocation = RecordLocationSerDe.deserialize(value);
-        if (recordInfo.getComparisonValue().compareTo(currentRecordLocation.getComparisonValue()) >= 0) {
-          IndexSegment currentSegment =
-              (IndexSegment) _segmentIdToSegmentMap.get(currentRecordLocation.getSegmentRef());
-          int currentDocId = currentRecordLocation.getDocId();
-          if (segment == currentSegment) {
-            validDocIds.replace(currentDocId, recordInfo.getDocId());
-          } else {
-            Objects.requireNonNull(currentSegment.getValidDocIds()).remove(currentDocId);
-            validDocIds.add(recordInfo.getDocId());
-          }
-          RecordLocationRef newRecordLocationRef =
-              new RecordLocationRef(segmentId, recordInfo.getDocId(), recordInfo.getComparisonValue());
-          txn.put(key, RecordLocationSerDe.serialize(newRecordLocationRef));
-        } else {
-          //txn.put(key, RecordLocationSerDe.serialize(currentRecordLocation));
-        }
-      } else {
-        validDocIds.add(recordInfo.getDocId());
-        RecordLocationRef recordLocationRef =
-            new RecordLocationRef(segmentId, recordInfo.getDocId(), recordInfo.getComparisonValue());
-        txn.put(key, RecordLocationSerDe.serialize(recordLocationRef));
-      }
-      txn.commit();
-    } catch (RocksDBException rocksDBException) {
-      // log error
-      //rocksDBException.printStackTrace();
-    }
+    return segmentId;
   }
 
   @Override
   public GenericRow updateRecord(GenericRow record, RecordInfo recordInfo) {
-    return null;
+    throw new NotImplementedException();
   }
 
   @Override
   public void removeSegment(IndexSegment segment) {
-
-  }
-
-  public static void main(String[] args) {
-
+    throw new NotImplementedException();
   }
 
   @Override
   public void close() {
+    try {
+      LOGGER.info(_rocksDB.getProperty("rocksdb.stats"));
+    } catch (Exception e) {
+
+    }
     _rocksDB.close();
+  }
+
+  public static void main(String[] args) {
+
   }
 }

@@ -1,7 +1,6 @@
 package org.apache.pinot.segment.local.upsert;
 
 import com.google.common.base.Joiner;
-import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Iterator;
@@ -59,7 +58,7 @@ public class PartitionUpsertOffHeapMetadataManager implements IPartitionUpsertMe
     _partialUpsertHandler = partialUpsertHandler;
     _hashFunction = hashFunction;
 
-    String prefix = Joiner.on("_").join("offHeapUpsert", _tableNameWithType, _partitionId);
+    String prefix = Joiner.on("_").join(PartitionUpsertOffHeapMetadataManager.class.getSimpleName(), _tableNameWithType, _partitionId);
     Path offHeapStoreDir = Files.createTempDirectory(prefix);
 
     LOGGER.info("Using offHeap storage dir {}", offHeapStoreDir);
@@ -99,12 +98,12 @@ public class PartitionUpsertOffHeapMetadataManager implements IPartitionUpsertMe
     while (recordInfoIterator.hasNext()) {
       RecordInfo recordInfo = recordInfoIterator.next();
       int primaryKeyId = getPrimaryKeyId(recordInfo);
-      RecordLocationRef currentRecordLocation = getRecordInfo(primaryKeyId);
+      RecordLocationWithSegmentId currentRecordLocation = getRecordInfo(primaryKeyId);
 
 
       if (currentRecordLocation != null) {
         // Existing primary key
-        IndexSegment currentSegment = (IndexSegment) _segmentIdToSegmentMap.get(currentRecordLocation.getSegmentRef());
+        IndexSegment currentSegment = (IndexSegment) _segmentIdToSegmentMap.get(currentRecordLocation.getSegmentId());
         int comparisonResult =
             recordInfo.getComparisonValue().compareTo(currentRecordLocation.getComparisonValue());
 
@@ -114,9 +113,9 @@ public class PartitionUpsertOffHeapMetadataManager implements IPartitionUpsertMe
         if (segment == currentSegment) {
           if (comparisonResult >= 0) {
             validDocIds.replace(currentRecordLocation.getDocId(), recordInfo.getDocId());
-            RecordLocationRef newRecordLocationRef =
-                new RecordLocationRef(segmentId, recordInfo.getDocId(), recordInfo.getComparisonValue());
-            updateRecordInfo(primaryKeyId, newRecordLocationRef);
+            RecordLocationWithSegmentId newRecordLocationWithSegmentId =
+                new RecordLocationWithSegmentId(segmentId, recordInfo.getDocId(), recordInfo.getComparisonValue());
+            updateRecordInfo(primaryKeyId, newRecordLocationWithSegmentId);
             continue;
           } else {
             continue;
@@ -133,9 +132,9 @@ public class PartitionUpsertOffHeapMetadataManager implements IPartitionUpsertMe
         if (segmentName.equals(currentSegmentName)) {
           if (comparisonResult >= 0) {
             validDocIds.add(recordInfo.getDocId());
-            RecordLocationRef newRecordLocationRef =
-                new RecordLocationRef(segmentId, recordInfo.getDocId(), recordInfo.getComparisonValue());
-            updateRecordInfo(primaryKeyId, newRecordLocationRef);
+            RecordLocationWithSegmentId newRecordLocationWithSegmentId =
+                new RecordLocationWithSegmentId(segmentId, recordInfo.getDocId(), recordInfo.getComparisonValue());
+            updateRecordInfo(primaryKeyId, newRecordLocationWithSegmentId);
             continue;
           } else {
             continue;
@@ -150,18 +149,18 @@ public class PartitionUpsertOffHeapMetadataManager implements IPartitionUpsertMe
         if (comparisonResult > 0) {
           Objects.requireNonNull(currentSegment.getValidDocIds()).remove(currentRecordLocation.getDocId());
           validDocIds.add(recordInfo.getDocId());
-          RecordLocationRef newRecordLocationRef =
-              new RecordLocationRef(segmentId, recordInfo.getDocId(), recordInfo.getComparisonValue());
-          updateRecordInfo(primaryKeyId, newRecordLocationRef);
+          RecordLocationWithSegmentId newRecordLocationWithSegmentId =
+              new RecordLocationWithSegmentId(segmentId, recordInfo.getDocId(), recordInfo.getComparisonValue());
+          updateRecordInfo(primaryKeyId, newRecordLocationWithSegmentId);
         } else {
           //updateRecordInfo(primaryKeyId, currentRecordLocation);
         }
       } else {
         // New primary key
         validDocIds.add(recordInfo.getDocId());
-        RecordLocationRef newRecordLocationRef =
-            new RecordLocationRef(segmentId, recordInfo.getDocId(), recordInfo.getComparisonValue());
-        updateRecordInfo(primaryKeyId, newRecordLocationRef);
+        RecordLocationWithSegmentId newRecordLocationWithSegmentId =
+            new RecordLocationWithSegmentId(segmentId, recordInfo.getDocId(), recordInfo.getComparisonValue());
+        updateRecordInfo(primaryKeyId, newRecordLocationWithSegmentId);
       }
     }
   }
@@ -187,12 +186,12 @@ public class PartitionUpsertOffHeapMetadataManager implements IPartitionUpsertMe
 
     int primaryKeyId = getPrimaryKeyId(recordInfo);
 
-    RecordLocationRef value = getRecordInfo(primaryKeyId);
+    RecordLocationWithSegmentId value = getRecordInfo(primaryKeyId);
 
     if (value != null) {
-      RecordLocationRef currentRecordLocation = value;
+      RecordLocationWithSegmentId currentRecordLocation = value;
       if (recordInfo.getComparisonValue().compareTo(currentRecordLocation.getComparisonValue()) >= 0) {
-        IndexSegment currentSegment = (IndexSegment) _segmentIdToSegmentMap.get(currentRecordLocation.getSegmentRef());
+        IndexSegment currentSegment = (IndexSegment) _segmentIdToSegmentMap.get(currentRecordLocation.getSegmentId());
         int currentDocId = currentRecordLocation.getDocId();
         if (segment == currentSegment) {
           validDocIds.replace(currentDocId, recordInfo.getDocId());
@@ -200,38 +199,29 @@ public class PartitionUpsertOffHeapMetadataManager implements IPartitionUpsertMe
           Objects.requireNonNull(currentSegment.getValidDocIds()).remove(currentDocId);
           validDocIds.add(recordInfo.getDocId());
         }
-        RecordLocationRef newRecordLocationRef =
-            new RecordLocationRef(segmentId, recordInfo.getDocId(), recordInfo.getComparisonValue());
-        updateRecordInfo(primaryKeyId, newRecordLocationRef);
+        RecordLocationWithSegmentId newRecordLocationWithSegmentId =
+            new RecordLocationWithSegmentId(segmentId, recordInfo.getDocId(), recordInfo.getComparisonValue());
+        updateRecordInfo(primaryKeyId, newRecordLocationWithSegmentId);
       } else {
         updateRecordInfo(primaryKeyId, currentRecordLocation);
       }
     } else {
       validDocIds.add(recordInfo.getDocId());
-      RecordLocationRef recordLocationRef =
-          new RecordLocationRef(segmentId, recordInfo.getDocId(), recordInfo.getComparisonValue());
-      updateRecordInfo(primaryKeyId, recordLocationRef);
+      RecordLocationWithSegmentId recordLocationWithSegmentId =
+          new RecordLocationWithSegmentId(segmentId, recordInfo.getDocId(), recordInfo.getComparisonValue());
+      updateRecordInfo(primaryKeyId, recordLocationWithSegmentId);
     }
   }
 
-  /**
-   * Removes the upsert metadata for the given immutable segment. No need to remove the upsert metadata for the
-   * consuming segment because it should be replaced by the committed segment.
-   */
-  public void removeSegment(IndexSegment segment) {
-    throw new NotImplementedException();
-  }
-
-  //TODO: How to update data for primary key at a specific index
-  private void updateRecordInfo(int primaryKeyId, RecordLocationRef recordLocationRef) {
+  private void updateRecordInfo(int primaryKeyId, RecordLocationWithSegmentId recordLocationWithSegmentId) {
     _readWriteLock.writeLock().lock();
-    _mutableForwardIndex.setInt(primaryKeyId, 0, recordLocationRef.getSegmentRef().intValue());
-    _mutableForwardIndex.setInt(primaryKeyId, 1, recordLocationRef.getDocId());
-    _mutableForwardIndex.setLong(primaryKeyId, 2, recordLocationRef.getComparisonValue());
+    _mutableForwardIndex.setInt(primaryKeyId, 0, recordLocationWithSegmentId.getSegmentId().intValue());
+    _mutableForwardIndex.setInt(primaryKeyId, 1, recordLocationWithSegmentId.getDocId());
+    _mutableForwardIndex.setLong(primaryKeyId, 2, recordLocationWithSegmentId.getComparisonValue());
     _readWriteLock.writeLock().unlock();
   }
 
-  private RecordLocationRef getRecordInfo(int primaryKeyId) {
+  private RecordLocationWithSegmentId getRecordInfo(int primaryKeyId) {
     _readWriteLock.readLock().lock();
     int segmentRef = _mutableForwardIndex.getInt(primaryKeyId, 0);
 
@@ -246,11 +236,16 @@ public class PartitionUpsertOffHeapMetadataManager implements IPartitionUpsertMe
     long comparisonVal =  _mutableForwardIndex.getLong(primaryKeyId, 2);
 
     _readWriteLock.readLock().unlock();
-    return new RecordLocationRef(segmentRef, docId, comparisonVal);
+    return new RecordLocationWithSegmentId(segmentRef, docId, comparisonVal);
   }
 
   @Override
   public GenericRow updateRecord(GenericRow record, RecordInfo recordInfo) {
-    return null;
+    throw new NotImplementedException();
+  }
+
+  @Override
+  public void removeSegment(IndexSegment segment) {
+    throw new NotImplementedException();
   }
 }

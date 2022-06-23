@@ -94,7 +94,7 @@ public class PartitionUpsertMetadataManager implements IPartitionUpsertMetadataM
   @Override
   public void addSegment(IndexSegment segment, Iterator<RecordInfo> recordInfoIterator) {
     String segmentName = segment.getSegmentName();
-    LOGGER.info("Adding upsert metadata for segment: {}", segmentName);
+    //LOGGER.info("Adding upsert metadata for segment: {}", segmentName);
 
     ThreadSafeMutableRoaringBitmap validDocIds = Objects.requireNonNull(segment.getValidDocIds());
     while (recordInfoIterator.hasNext()) {
