@@ -265,4 +265,9 @@ public class PartitionUpsertMetadataManager implements IPartitionUpsertMetadataM
           _primaryKeyToRecordLocationMap.size());
     }
   }
+
+  @Override
+  public void close() {
+    _primaryKeyToRecordLocationMap.clear();
+  }
 }

@@ -248,4 +248,15 @@ public class PartitionUpsertOffHeapMetadataManager implements IPartitionUpsertMe
   public void removeSegment(IndexSegment segment) {
     throw new NotImplementedException();
   }
+
+  @Override
+  public void close() {
+    try {
+      _mutableForwardIndex.close();
+      _bytesOffHeapMutableDictionary.close();
+      _memoryManager.close();
+    } catch (Exception e) {
+
+    }
+  }
 }

@@ -31,7 +31,7 @@ import org.slf4j.LoggerFactory;
 
 
 @NotThreadSafe
-public class PartitionUpsertRocksDBMetadataManager implements IPartitionUpsertMetadataManager, Closeable {
+public class PartitionUpsertRocksDBMetadataManager implements IPartitionUpsertMetadataManager {
   private static final Logger LOGGER = LoggerFactory.getLogger(PartitionUpsertRocksDBMetadataManager.class);
 
   private final String _tableNameWithType;

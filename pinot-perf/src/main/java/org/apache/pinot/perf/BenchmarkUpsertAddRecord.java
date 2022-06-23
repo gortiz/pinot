@@ -89,8 +89,8 @@ import org.roaringbitmap.PeekableIntIterator;
 @BenchmarkMode(Mode.AverageTime)
 @OutputTimeUnit(TimeUnit.MILLISECONDS)
 @Fork(value = 1, jvmArgs = {"-server", "-Xmx8G", "-XX:MaxDirectMemorySize=16G"})
-@Warmup(iterations = 1, time = 10, timeUnit = TimeUnit.SECONDS)
-@Measurement(iterations = 2, time = 10, timeUnit = TimeUnit.SECONDS)
+@Warmup(iterations = 1, time = 60, timeUnit = TimeUnit.SECONDS)
+@Measurement(iterations = 2, time = 60, timeUnit = TimeUnit.SECONDS)
 @State(Scope.Benchmark)
 @CompilerControl(CompilerControl.Mode.DONT_INLINE)
 public class BenchmarkUpsertAddRecord {
@@ -139,7 +139,7 @@ public class BenchmarkUpsertAddRecord {
     new Runner(opt.build()).run();
   }
 
-  @Setup(Level.Iteration)
+  @Setup(Level.Trial)
   public void setUp()
       throws Exception {
     FileUtils.deleteQuietly(INDEX_DIR);
@@ -163,7 +163,7 @@ public class BenchmarkUpsertAddRecord {
 
   }
 
-  @TearDown(Level.Iteration)
+  @TearDown(Level.Trial)
   public void tearDown(BenchmarkParams benchmarkParams) {
     for (IndexSegment indexSegment : _indexSegments) {
       indexSegment.destroy();
@@ -177,6 +177,7 @@ public class BenchmarkUpsertAddRecord {
       }
     }
 
+    _partitionUpsertMetadataManager.close();
     FileUtils.deleteQuietly(INDEX_DIR);
   }
 

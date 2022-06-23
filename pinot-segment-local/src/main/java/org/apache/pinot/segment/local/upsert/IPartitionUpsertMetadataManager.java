@@ -15,4 +15,6 @@ public interface IPartitionUpsertMetadataManager {
   GenericRow updateRecord(GenericRow record, RecordInfo recordInfo);
 
   void removeSegment(IndexSegment segment);
+
+  void close();
 }

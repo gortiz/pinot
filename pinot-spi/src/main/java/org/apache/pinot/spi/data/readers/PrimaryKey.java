@@ -18,6 +18,8 @@
  */
 package org.apache.pinot.spi.data.readers;
 
+import java.nio.ByteBuffer;
+import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
 import org.apache.commons.lang3.SerializationUtils;
 
@@ -38,6 +40,11 @@ public class PrimaryKey {
 
   public byte[] asBytes() {
     return SerializationUtils.serialize(_values);
+//    return asBytesFirstStringIndex();
+  }
+
+  public byte[] asBytesFirstStringIndex() {
+   return ((String) _values[0]).getBytes(StandardCharsets.UTF_8);
   }
 
   @Override
