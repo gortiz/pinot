@@ -101,6 +101,7 @@ public class PartitionUpsertRocksDBMetadataManager implements IPartitionUpsertMe
     dbOptions.setMaxOpenFiles(-1); // allow multiple sstable files to be opened, good when you have to do random lreads
     dbOptions.setInfoLogLevel(InfoLogLevel.HEADER_LEVEL); // disable logging
     dbOptions.setStatsDumpPeriodSec(0); // disable dumping rocksDB stats in logs
+    dbOptions.setUseFsync(false);
     return dbOptions;
   }
 
@@ -116,7 +117,7 @@ public class PartitionUpsertRocksDBMetadataManager implements IPartitionUpsertMe
     while (recordInfoIterator.hasNext()) {
       RecordInfo recordInfo = recordInfoIterator.next();
       try {
-        byte[] key = ((String) recordInfo.getPrimaryKey().getValues()[0]).getBytes(StandardCharsets.UTF_8);
+        byte[] key = recordInfo.getPrimaryKey().asBytes();
         byte[] value = _rocksDB.get(_readOptions, key);
 
         if (value != null) {
@@ -193,7 +194,7 @@ public class PartitionUpsertRocksDBMetadataManager implements IPartitionUpsertMe
     ThreadSafeMutableRoaringBitmap validDocIds = Objects.requireNonNull(segment.getValidDocIds());
 
     try {
-      byte[] key = ((String) recordInfo.getPrimaryKey().getValues()[0]).getBytes(StandardCharsets.UTF_8);
+      byte[] key = recordInfo.getPrimaryKey().asBytes();
 
       // keyMayExist does a probablistic check for a key, can return false positives but no false negatives
       // helps to avoid expensive gets if key doesn't exist in DB

@@ -45,23 +45,27 @@ import org.roaringbitmap.PeekableIntIterator;
 
 public class UpsertRunner {
 
+  private static PartitionUpsertMetadataManagerFactory.MetadataStore _metadataStore =
+      PartitionUpsertMetadataManagerFactory.MetadataStore.ROCKSDB;
+
   private static final File INDEX_DIR = new File(FileUtils.getTempDirectory(), "UpsertRunner");
   private static final String TABLE_NAME = "MyTable";
   private static final String INT_COL_NAME = "INT_COL";
-  private static final String LONG_COL_NAME = "LONG_COL";
+  private static final String LONG_COL_NAME = "LONG_COL"; // used as comparison column
   private static final String SORTED_COL_NAME = "SORTED_COL";
   private static final String RAW_INT_COL_NAME = "RAW_INT_COL";
   private static final String RAW_STRING_COL_NAME = "RAW_STRING_COL";
   private static final String NO_INDEX_INT_COL_NAME = "NO_INDEX_INT_COL";
   private static final String NO_INDEX_STRING_COL = "NO_INDEX_STRING_COL";
-  private static final String LOW_CARDINALITY_STRING_COL = "LOW_CARDINALITY_STRING_COL";
+  private static final String LOW_CARDINALITY_STRING_COL = "LOW_CARDINALITY_STRING_COL"; // used as key column
 
   private static LongSupplier _supplier;
-  static String _scenario = "EXP(0.5)";
-  static int _numRows = 1000;
-  static int _numSegments = 10;
+  private static String _scenario = "EXP(0.5)";
+  private static int _numRows = 1000;
+  private static int _numSegments = 10;
+  private static int _cardinality = 100;
   private static  List<IndexSegment> _indexSegments;
-  private static String[] lowCardinalityValues = IntStream.range(0, _numRows / 10).mapToObj(i -> "value" + i)
+  private static String[] lowCardinalityValues = IntStream.range(0, _cardinality).mapToObj(i -> "value" + i)
       .toArray(String[]::new);
 
   public static void main(String[] args) throws Exception {
@@ -72,7 +76,7 @@ public class UpsertRunner {
     IndexLoadingConfig indexLoadingConfig = new IndexLoadingConfig();
     IPartitionUpsertMetadataManager partitionUpsertMetadataManager =
         PartitionUpsertMetadataManagerFactory.getPartitionUpsertMetadataManager(TABLE_NAME, 0, null, null,
-            HashFunction.NONE, PartitionUpsertMetadataManagerFactory.MetadataStore.ROCKSDB);
+            HashFunction.NONE, _metadataStore);
 
     for (int i = 0; i < _numSegments; i++) {
       String name = "segment_" + i;
@@ -91,10 +95,8 @@ public class UpsertRunner {
       }
     }
 
-    File dir = new File("/Users/kharekartik/Documents/Developer/incubator-pinot/upsert/runner/");
-    dir.mkdirs();
-
-    File file = new File("/Users/kharekartik/Documents/Developer/incubator-pinot/upsert/runner/", "offHeap.txt");
+    String dirPath = Joiner.on("_").join(System.getProperty("user.dir"), _metadataStore.toString());
+    File file = new File(dirPath, "UpsertRunnerOut.txt");
     FileWriter fileWriter = new FileWriter(file);
     for (int i = 0; i < _numSegments; i++) {
       ImmutableSegmentImpl immutableSegment = (ImmutableSegmentImpl) _indexSegments.get(i);

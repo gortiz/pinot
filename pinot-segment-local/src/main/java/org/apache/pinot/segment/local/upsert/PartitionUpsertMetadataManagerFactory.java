@@ -8,7 +8,7 @@ import org.apache.pinot.spi.config.table.HashFunction;
 public class PartitionUpsertMetadataManagerFactory {
 
   public enum MetadataStore {
-    ON_HEAP, MMAP, ROCKSDB
+    ON_HEAP, OFF_HEAP, ROCKSDB
   }
 
 
@@ -20,7 +20,7 @@ public class PartitionUpsertMetadataManagerFactory {
         case ON_HEAP:
           return new PartitionUpsertMetadataManager(tableNameWithType, partitionId, serverMetrics, partialUpsertHandler,
               hashFunction);
-        case MMAP:
+        case OFF_HEAP:
           return new PartitionUpsertOffHeapMetadataManager(tableNameWithType, partitionId, serverMetrics,
               partialUpsertHandler, hashFunction);
         case ROCKSDB:
