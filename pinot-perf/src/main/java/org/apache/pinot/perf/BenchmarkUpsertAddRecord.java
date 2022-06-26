@@ -89,13 +89,13 @@ import org.roaringbitmap.PeekableIntIterator;
 @BenchmarkMode(Mode.AverageTime)
 @OutputTimeUnit(TimeUnit.MILLISECONDS)
 @Fork(value = 1, jvmArgs = {"-server", "-Xmx8G", "-XX:MaxDirectMemorySize=16G"})
-@Warmup(iterations = 1, time = 60, timeUnit = TimeUnit.SECONDS)
-@Measurement(iterations = 2, time = 60, timeUnit = TimeUnit.SECONDS)
+@Warmup(iterations = 1, time = 10, timeUnit = TimeUnit.SECONDS)
+@Measurement(iterations = 2, time = 10, timeUnit = TimeUnit.SECONDS)
 @State(Scope.Benchmark)
 @CompilerControl(CompilerControl.Mode.DONT_INLINE)
 public class BenchmarkUpsertAddRecord {
 
-  @Param({"ON_HEAP", "ROCKSDB", "OFF_HEAP"})
+  @Param({"ON_HEAP", "ROCKSDB", "MAPDB"})
   private String _metadataStoreType;
 
   @Param({"10000"})

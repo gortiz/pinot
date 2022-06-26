@@ -18,6 +18,7 @@
  */
 package org.apache.pinot.spi.data.readers;
 
+import java.io.Serializable;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
@@ -27,7 +28,7 @@ import org.apache.commons.lang3.SerializationUtils;
 /**
  * The primary key of a record. Note that the value used in the primary key must be single-value.
  */
-public class PrimaryKey {
+public class PrimaryKey implements Serializable {
   private final Object[] _values;
 
   public PrimaryKey(Object[] values) {

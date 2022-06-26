@@ -1,9 +1,11 @@
 package org.apache.pinot.segment.local.upsert;
 
+import java.io.Serializable;
 import java.nio.ByteBuffer;
 
 // Currently supports only Long as comparable since it is meant for POC purposes.
-public class RecordLocationWithSegmentId {
+public class RecordLocationWithSegmentId implements Serializable {
+
   private final Integer _segmentId;
   private final int _docId;
   /** value used to denote the order */
