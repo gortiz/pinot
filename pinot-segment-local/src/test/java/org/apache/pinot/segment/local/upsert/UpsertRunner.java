@@ -95,7 +95,10 @@ public class UpsertRunner {
       }
     }
 
-    String dirPath = Joiner.on("_").join(System.getProperty("user.dir"), _metadataStore.toString());
+    String dirPath = Joiner.on("_").join(System.getProperty("user.dir") + "/", _metadataStore.toString());
+    File dir = new File(dirPath);
+    dir.mkdirs();
+
     File file = new File(dirPath, "UpsertRunnerOut.txt");
     FileWriter fileWriter = new FileWriter(file);
     for (int i = 0; i < _numSegments; i++) {

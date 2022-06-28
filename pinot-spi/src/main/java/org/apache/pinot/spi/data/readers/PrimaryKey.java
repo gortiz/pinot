@@ -18,6 +18,7 @@
  */
 package org.apache.pinot.spi.data.readers;
 
+import com.fasterxml.jackson.databind.util.ByteBufferBackedOutputStream;
 import java.io.Serializable;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
@@ -41,6 +42,13 @@ public class PrimaryKey implements Serializable {
 
   public byte[] asBytes() {
     return SerializationUtils.serialize(_values);
+//    return asBytesFirstStringIndex();
+  }
+
+  public byte[] asBytes(ByteBuffer reuse) {
+    reuse.clear();
+    SerializationUtils.serialize(_values, new ByteBufferBackedOutputStream(reuse));
+    return reuse.array();
 //    return asBytesFirstStringIndex();
   }
 

@@ -71,7 +71,7 @@ public class PartitionUpsertOffHeapMetadataManager implements IPartitionUpsertMe
             null);
 
     // Used to store mapping from primary key to an int id.
-    _bytesOffHeapMutableDictionary = new BytesOffHeapMutableDictionary(50000, 3, _memoryManager, null, 10);
+    _bytesOffHeapMutableDictionary = new BytesOffHeapMutableDictionary(1000000, 3, _memoryManager, null, 256);
 
     //The record to be stored contains an integer segmentID (derived from segment), and integer doc id, and a long comparable.
     // The comparable data type will need to be part of the constructor

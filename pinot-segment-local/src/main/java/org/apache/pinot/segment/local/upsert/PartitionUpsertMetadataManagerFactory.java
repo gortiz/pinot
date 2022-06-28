@@ -8,7 +8,7 @@ import org.apache.pinot.spi.config.table.HashFunction;
 public class PartitionUpsertMetadataManagerFactory {
 
   public enum MetadataStore {
-    ON_HEAP, OFF_HEAP, ROCKSDB, MAPDB
+    ON_HEAP, ON_HEAP_SERDE, OFF_HEAP, ROCKSDB, MAPDB, CHRONICLE_MAP, SQLITE, H2
   }
 
 
@@ -20,6 +20,9 @@ public class PartitionUpsertMetadataManagerFactory {
         case ON_HEAP:
           return new PartitionUpsertMetadataManager(tableNameWithType, partitionId, serverMetrics, partialUpsertHandler,
               hashFunction);
+        case ON_HEAP_SERDE:
+          return new PartitionUpsertSerializedOnHeapMetadataManager(tableNameWithType, partitionId, serverMetrics, partialUpsertHandler,
+              hashFunction);
         case OFF_HEAP:
           return new PartitionUpsertOffHeapMetadataManager(tableNameWithType, partitionId, serverMetrics,
               partialUpsertHandler, hashFunction);
@@ -28,6 +31,15 @@ public class PartitionUpsertMetadataManagerFactory {
               partialUpsertHandler, hashFunction);
         case MAPDB:
           return new PartitionUpsertMapDBMetadataManager(tableNameWithType, partitionId, serverMetrics,
+              partialUpsertHandler, hashFunction);
+        case CHRONICLE_MAP:
+          return new PartitionUpsertChronicleMapMetadataManager(tableNameWithType, partitionId, serverMetrics,
+              partialUpsertHandler, hashFunction);
+        case SQLITE:
+          return new PartitionUpsertSQLiteMetadataManager(tableNameWithType, partitionId, serverMetrics,
+              partialUpsertHandler, hashFunction);
+        case H2:
+          return new PartitionUpsertH2MetadataManager(tableNameWithType, partitionId, serverMetrics,
               partialUpsertHandler, hashFunction);
       }
     } catch (Exception e) {

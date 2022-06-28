@@ -95,19 +95,19 @@ import org.roaringbitmap.PeekableIntIterator;
 @CompilerControl(CompilerControl.Mode.DONT_INLINE)
 public class BenchmarkUpsertAddRecord {
 
-  @Param({"ON_HEAP", "ROCKSDB", "MAPDB"})
+  @Param({"ON_HEAP", "ON_HEAP_SERDE", "ROCKSDB", "OFF_HEAP", "MAPDB", "CHRONICLE_MAP", "H2", "SQLITE"})
   private String _metadataStoreType;
 
-  @Param({"10000"})
+  @Param({"1000"})
   private int _numRows;
 
   @Param({"10"})
   private int _numSegments;
 
-  @Param({"50000"})
+  @Param({"5000000"})
   private int _keyCardinality;
 
-  @Param({"1"})
+  @Param({"10"})
   private int _numRuns;
 
   private static final File INDEX_DIR = new File(FileUtils.getTempDirectory(), "BenchmarkUpsertAddRecord");
