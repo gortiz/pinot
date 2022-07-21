@@ -172,6 +172,12 @@
       <artifactId>chronicle-map</artifactId>
       <version>3.22.7</version>
     </dependency>
+    <!-- https://mvnrepository.com/artifact/org.lmdbjava/lmdbjava -->
+    <dependency>
+      <groupId>org.lmdbjava</groupId>
+      <artifactId>lmdbjava</artifactId>
+      <version>0.8.2</version>
+    </dependency>
     <dependency>
       <groupId>org.xerial</groupId>
       <artifactId>sqlite-jdbc</artifactId>

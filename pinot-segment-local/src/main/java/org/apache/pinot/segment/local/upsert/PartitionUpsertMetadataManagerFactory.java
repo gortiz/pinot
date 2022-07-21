@@ -8,7 +8,7 @@ import org.apache.pinot.spi.config.table.HashFunction;
 public class PartitionUpsertMetadataManagerFactory {
 
   public enum MetadataStore {
-    ON_HEAP, ON_HEAP_SERDE, OFF_HEAP, ROCKSDB, MAPDB, CHRONICLE_MAP, SQLITE, H2
+    ON_HEAP, ON_HEAP_SERDE, OFF_HEAP, ROCKSDB, MAPDB, CHRONICLE_MAP, SQLITE, H2, LMDB
   }
 
 
@@ -40,6 +40,9 @@ public class PartitionUpsertMetadataManagerFactory {
               partialUpsertHandler, hashFunction);
         case H2:
           return new PartitionUpsertH2MetadataManager(tableNameWithType, partitionId, serverMetrics,
+              partialUpsertHandler, hashFunction);
+        case LMDB:
+          return new PartitionUpsertLMDBMetadataManager(tableNameWithType, partitionId, serverMetrics,
               partialUpsertHandler, hashFunction);
       }
     } catch (Exception e) {
