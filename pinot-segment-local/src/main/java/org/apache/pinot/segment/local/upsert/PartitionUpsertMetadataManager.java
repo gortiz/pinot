@@ -268,6 +268,7 @@ public class PartitionUpsertMetadataManager implements IPartitionUpsertMetadataM
 
   @Override
   public void close() {
+    System.out.println("TOTAL KEYS: " + _primaryKeyToRecordLocationMap.size());
     _primaryKeyToRecordLocationMap.clear();
   }
 }

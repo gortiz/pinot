@@ -58,12 +58,14 @@ public class PartitionUpsertRocksDBMetadataManager implements IPartitionUpsertMe
     _hashFunction = hashFunction;
 
     //TODO: Needs to be changed to a configurable location
-    String dirPrefix = Joiner.on("_").join(PartitionUpsertRocksDBMetadataManager.class.getSimpleName(), _tableNameWithType, _partitionId);
-    Path tmpDir = Files.createTempDirectory(dirPrefix);
-    LOGGER.info("Using storage path for rocksdb {}", tmpDir);
+    String dirPath = Joiner.on("/").join(System.getProperty("user.dir"), _tableNameWithType, PartitionUpsertRocksDBMetadataManager.class.getSimpleName(), System.currentTimeMillis());
+    File dir = new File(dirPath);
+    dir.mkdirs();
+
+    LOGGER.info("Using storage path for rocksdb {}", dir);
 
     Options options = getOptimisedConfigForPointLookup();
-    _rocksDB = RocksDB.open(options, tmpDir.toAbsolutePath().toString());
+    _rocksDB = RocksDB.open(options, dir.getAbsolutePath());
     _readOptions = new ReadOptions();
     _writeOptions = new WriteOptions();
 
@@ -263,7 +265,9 @@ public class PartitionUpsertRocksDBMetadataManager implements IPartitionUpsertMe
   @Override
   public void close() {
     try {
-      LOGGER.info(_rocksDB.getProperty("rocksdb.stats"));
+      //LOGGER.info(_rocksDB.getProperty("rocksdb.stats"));
+      System.out.println(_rocksDB.getProperty("rocksdb.stats"));
+      System.out.println("TOTAL KEYS IN ROCKSDB: " + _rocksDB.getLongProperty("rocksdb.estimate-num-keys"));
     } catch (Exception e) {
 
     }

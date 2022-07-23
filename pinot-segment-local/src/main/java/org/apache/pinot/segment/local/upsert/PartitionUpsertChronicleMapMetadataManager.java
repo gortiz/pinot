@@ -20,6 +20,7 @@ package org.apache.pinot.segment.local.upsert;
 
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Joiner;
+import java.io.File;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Iterator;
@@ -91,24 +92,33 @@ public class PartitionUpsertChronicleMapMetadataManager implements IPartitionUps
   private final GenericRow _reuse = new GenericRow();
 
   public PartitionUpsertChronicleMapMetadataManager(String tableNameWithType, int partitionId, ServerMetrics serverMetrics,
-      @Nullable PartialUpsertHandler partialUpsertHandler, HashFunction hashFunction) throws Exception {
+      @Nullable PartialUpsertHandler partialUpsertHandler, HashFunction hashFunction, int numEntries) throws Exception {
     _tableNameWithType = tableNameWithType;
     _partitionId = partitionId;
     _serverMetrics = serverMetrics;
     _partialUpsertHandler = partialUpsertHandler;
     _hashFunction = hashFunction;
 
-    String dirPrefix = Joiner.on("_").join(PartitionUpsertMapDBMetadataManager.class.getSimpleName(), _tableNameWithType, _partitionId);
-    Path tmpDBFile = Files.createTempFile(dirPrefix+"1212",".db");
-    LOGGER.info("Using storage path for mapDB {}", tmpDBFile);
+    String dirPath = Joiner.on("/").join(System.getProperty("user.dir"), _tableNameWithType, PartitionUpsertChronicleMapMetadataManager.class.getSimpleName(), System.currentTimeMillis());
+    File dir = new File(dirPath);
+    dir.mkdirs();
+
+    File file = new File(dirPath, "chronicleMap.db");
+    LOGGER.info("Using storage path for chronicleMap {}", file.getPath());
 
     _primaryKeyToRecordLocationMap = ChronicleMap
         .of(byte[].class, byte[].class)
-        .name(PartitionUpsertChronicleMapMetadataManager.class.getSimpleName())
-        .averageKeySize(132.0)
+        .name(PartitionUpsertChronicleMapMetadataManager.class.getSimpleName() + "-" + System.currentTimeMillis())
+        .averageKeySize(100.0)
         .averageValueSize(16.0)
-        .entries(1_000_000)
-        .createPersistedTo(tmpDBFile.toFile());
+        .entries(numEntries)
+        .maxBloatFactor(2.0)
+        .createPersistedTo(file);
+  }
+
+  public PartitionUpsertChronicleMapMetadataManager(String tableNameWithType, int partitionId, ServerMetrics serverMetrics,
+      @Nullable PartialUpsertHandler partialUpsertHandler, HashFunction hashFunction) throws Exception {
+    this(tableNameWithType, partitionId, serverMetrics, partialUpsertHandler, hashFunction, 11_000_000);
   }
 
   /**
@@ -317,6 +327,12 @@ public class PartitionUpsertChronicleMapMetadataManager implements IPartitionUps
 
   @Override
   public void close() {
+//    System.out.println("----CHRONICLE_MAP SEGMENT STATS----");
+//    for(ChronicleMap.SegmentStats segmentStats: _primaryKeyToRecordLocationMap.segmentStats()) {
+//      System.out.println(segmentStats.toString());
+//    }
+    System.out.println("PERCENT FREE SPACE: " +  _primaryKeyToRecordLocationMap.percentageFreeSpace());
+    System.out.println("TOTAL KEYS CHRONICLE MAP: " + _primaryKeyToRecordLocationMap.size());
     _primaryKeyToRecordLocationMap.close();
   }
 }

@@ -41,8 +41,8 @@ public class PrimaryKey implements Serializable {
   }
 
   public byte[] asBytes() {
-    return SerializationUtils.serialize(_values);
-//    return asBytesFirstStringIndex();
+//    return SerializationUtils.serialize(_values);
+    return asBytesFirstStringIndex();
   }
 
   public byte[] asBytes(ByteBuffer reuse) {
@@ -53,7 +53,8 @@ public class PrimaryKey implements Serializable {
   }
 
   public byte[] asBytesFirstStringIndex() {
-   return ((String) _values[0]).getBytes(StandardCharsets.UTF_8);
+   byte[] arr =  ((String) _values[0]).getBytes(StandardCharsets.UTF_8);
+   return arr;
   }
 
   @Override
