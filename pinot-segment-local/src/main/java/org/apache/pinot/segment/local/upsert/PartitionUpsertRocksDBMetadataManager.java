@@ -1,6 +1,9 @@
 package org.apache.pinot.segment.local.upsert;
 
 import com.google.common.base.Joiner;
+import com.google.common.hash.BloomFilter;
+import com.google.common.hash.Funnels;
+import groovy.model.ValueHolder;
 import java.io.Closeable;
 import java.io.File;
 import java.nio.charset.StandardCharsets;
@@ -25,6 +28,7 @@ import org.rocksdb.Options;
 import org.rocksdb.ReadOptions;
 import org.rocksdb.RocksDB;
 import org.rocksdb.RocksDBException;
+import org.rocksdb.Statistics;
 import org.rocksdb.WriteOptions;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -97,6 +101,7 @@ public class PartitionUpsertRocksDBMetadataManager implements IPartitionUpsertMe
 
     BlockBasedTableConfig blockBasedTableConfig = new BlockBasedTableConfig();
     blockBasedTableConfig.setFormatVersion(5); // using latest file format
+//    blockBasedTableConfig.setCacheIndexAndFilterBlocks(true);
     dbOptions.setTableFormatConfig(blockBasedTableConfig);
 
     dbOptions.optimizeForPointLookup(1024); // using cache of 1GB and hash based index
@@ -120,70 +125,75 @@ public class PartitionUpsertRocksDBMetadataManager implements IPartitionUpsertMe
       RecordInfo recordInfo = recordInfoIterator.next();
       try {
         byte[] key = recordInfo.getPrimaryKey().asBytes();
-        byte[] value = _rocksDB.get(_readOptions, key);
+        boolean keyMayExist = _rocksDB.keyMayExist(_readOptions, key, null);
 
-        if (value != null) {
-          RecordLocationWithSegmentId currentRecordLocation = RecordLocationSerDe.deserialize(value);
+        if(keyMayExist) {
+          byte[] value = _rocksDB.get(_readOptions, key);
 
-          // Existing primary key
-          IndexSegment currentSegment = (IndexSegment) _segmentIdToSegmentMap.get(currentRecordLocation.getSegmentId());
-          int comparisonResult = recordInfo.getComparisonValue().compareTo(currentRecordLocation.getComparisonValue());
+          if (value != null) {
+            RecordLocationWithSegmentId currentRecordLocation = RecordLocationSerDe.deserialize(value);
 
-          // The current record is in the same segment
-          // Update the record location when there is a tie to keep the newer record. Note that the record info
-          // iterator will return records with incremental doc ids.
-          if (segment == currentSegment) {
-            if (comparisonResult >= 0) {
-              validDocIds.replace(currentRecordLocation.getDocId(), recordInfo.getDocId());
-              RecordLocationWithSegmentId newRecordLocationWithSegmentId =
-                  new RecordLocationWithSegmentId(segmentId, recordInfo.getDocId(), recordInfo.getComparisonValue());
-              _rocksDB.put(_writeOptions, key, RecordLocationSerDe.serialize(newRecordLocationWithSegmentId));
-              continue;
-            } else {
-              continue;
+            // Existing primary key
+            IndexSegment currentSegment = (IndexSegment) _segmentIdToSegmentMap.get(currentRecordLocation.getSegmentId());
+            int comparisonResult = recordInfo.getComparisonValue().compareTo(currentRecordLocation.getComparisonValue());
+
+            // The current record is in the same segment
+            // Update the record location when there is a tie to keep the newer record. Note that the record info
+            // iterator will return records with incremental doc ids.
+            if (segment == currentSegment) {
+              if (comparisonResult >= 0) {
+                validDocIds.replace(currentRecordLocation.getDocId(), recordInfo.getDocId());
+                RecordLocationWithSegmentId newRecordLocationWithSegmentId = new RecordLocationWithSegmentId(segmentId, recordInfo.getDocId(), recordInfo.getComparisonValue());
+                _rocksDB.put(_writeOptions, key, RecordLocationSerDe.serialize(newRecordLocationWithSegmentId));
+                continue;
+              } else {
+                continue;
+              }
             }
-          }
 
-          // The current record is in an old segment being replaced
-          // This could happen when committing a consuming segment, or reloading a completed segment. In this
-          // case, we want to update the record location when there is a tie because the record locations should
-          // point to the new added segment instead of the old segment being replaced. Also, do not update the valid
-          // doc ids for the old segment because it has not been replaced yet.
-          String currentSegmentName = currentSegment.getSegmentName();
-          if (segmentName.equals(currentSegmentName)) {
-            if (comparisonResult >= 0) {
+            // The current record is in an old segment being replaced
+            // This could happen when committing a consuming segment, or reloading a completed segment. In this
+            // case, we want to update the record location when there is a tie because the record locations should
+            // point to the new added segment instead of the old segment being replaced. Also, do not update the valid
+            // doc ids for the old segment because it has not been replaced yet.
+            String currentSegmentName = currentSegment.getSegmentName();
+            if (segmentName.equals(currentSegmentName)) {
+              if (comparisonResult >= 0) {
+                validDocIds.add(recordInfo.getDocId());
+                RecordLocationWithSegmentId newRecordLocationWithSegmentId = new RecordLocationWithSegmentId(segmentId, recordInfo.getDocId(), recordInfo.getComparisonValue());
+                _rocksDB.put(_writeOptions, key, RecordLocationSerDe.serialize(newRecordLocationWithSegmentId));
+                continue;
+              } else {
+                continue;
+              }
+            }
+
+            // The current record is in a different segment
+            // Update the record location when getting a newer comparison value, or the value is the same as the
+            // current value, but the segment has a larger sequence number (the segment is newer than the current
+            // segment).
+            if (comparisonResult > 0) {
+              Objects.requireNonNull(currentSegment.getValidDocIds()).remove(currentRecordLocation.getDocId());
               validDocIds.add(recordInfo.getDocId());
-              RecordLocationWithSegmentId newRecordLocationWithSegmentId =
-                  new RecordLocationWithSegmentId(segmentId, recordInfo.getDocId(), recordInfo.getComparisonValue());
+              RecordLocationWithSegmentId newRecordLocationWithSegmentId = new RecordLocationWithSegmentId(segmentId, recordInfo.getDocId(), recordInfo.getComparisonValue());
               _rocksDB.put(_writeOptions, key, RecordLocationSerDe.serialize(newRecordLocationWithSegmentId));
-              continue;
             } else {
-              continue;
+              //
             }
-          }
-
-          // The current record is in a different segment
-          // Update the record location when getting a newer comparison value, or the value is the same as the
-          // current value, but the segment has a larger sequence number (the segment is newer than the current
-          // segment).
-          if (comparisonResult > 0) {
-            Objects.requireNonNull(currentSegment.getValidDocIds()).remove(currentRecordLocation.getDocId());
-            validDocIds.add(recordInfo.getDocId());
-            RecordLocationWithSegmentId newRecordLocationWithSegmentId =
-                new RecordLocationWithSegmentId(segmentId, recordInfo.getDocId(), recordInfo.getComparisonValue());
-            _rocksDB.put(_writeOptions, key, RecordLocationSerDe.serialize(newRecordLocationWithSegmentId));
           } else {
-            //
+            // New primary key
+            validDocIds.add(recordInfo.getDocId());
+            RecordLocationWithSegmentId newRecordLocationWithSegmentId = new RecordLocationWithSegmentId(segmentId, recordInfo.getDocId(), recordInfo.getComparisonValue());
+            _rocksDB.put(_writeOptions, key, RecordLocationSerDe.serialize(newRecordLocationWithSegmentId));
           }
         } else {
           // New primary key
           validDocIds.add(recordInfo.getDocId());
-          RecordLocationWithSegmentId newRecordLocationWithSegmentId =
-              new RecordLocationWithSegmentId(segmentId, recordInfo.getDocId(), recordInfo.getComparisonValue());
+          RecordLocationWithSegmentId newRecordLocationWithSegmentId = new RecordLocationWithSegmentId(segmentId, recordInfo.getDocId(), recordInfo.getComparisonValue());
           _rocksDB.put(_writeOptions, key, RecordLocationSerDe.serialize(newRecordLocationWithSegmentId));
         }
       } catch (Exception e) {
-        e.printStackTrace();
+        LOGGER.warn("Could not update partition metadata in rocksDB for segment {}", segmentName, e);
       }
     }
   }
@@ -200,7 +210,8 @@ public class PartitionUpsertRocksDBMetadataManager implements IPartitionUpsertMe
 
       // keyMayExist does a probablistic check for a key, can return false positives but no false negatives
       // helps to avoid expensive gets if key doesn't exist in DB
-      boolean keyMayExist = _rocksDB.keyMayExist(_readOptions, key, null);
+//      boolean keyMayExist = _rocksDB.keyMayExist(_readOptions, key, null);
+      boolean keyMayExist = true;
       if (keyMayExist) {
         byte[] value = _rocksDB.get(_readOptions, key);
         if (value != null) {
@@ -235,11 +246,12 @@ public class PartitionUpsertRocksDBMetadataManager implements IPartitionUpsertMe
         int segmentId = getSegmentId(segment);
         RecordLocationWithSegmentId recordLocationWithSegmentId =
             new RecordLocationWithSegmentId(segmentId, recordInfo.getDocId(), recordInfo.getComparisonValue());
+
         _rocksDB.put(_writeOptions, key, RecordLocationSerDe.serialize(recordLocationWithSegmentId));
       }
     } catch (RocksDBException rocksDBException) {
       // log error
-      rocksDBException.printStackTrace();
+      LOGGER.warn("Could not update partition metadata in rocksDB for segment {}", segment.getSegmentName(), rocksDBException);
     }
   }
 
@@ -268,8 +280,9 @@ public class PartitionUpsertRocksDBMetadataManager implements IPartitionUpsertMe
       //LOGGER.info(_rocksDB.getProperty("rocksdb.stats"));
       System.out.println(_rocksDB.getProperty("rocksdb.stats"));
       System.out.println("TOTAL KEYS IN ROCKSDB: " + _rocksDB.getLongProperty("rocksdb.estimate-num-keys"));
-    } catch (Exception e) {
 
+    } catch (Exception e) {
+        e.printStackTrace();
     }
     _rocksDB.close();
   }
