@@ -46,7 +46,7 @@ import org.roaringbitmap.PeekableIntIterator;
 public class UpsertRunner {
 
   private static PartitionUpsertMetadataManagerFactory.MetadataStore _metadataStore =
-      PartitionUpsertMetadataManagerFactory.MetadataStore.LMDB;
+      PartitionUpsertMetadataManagerFactory.MetadataStore.ROCKSDB;
 
   private static final File INDEX_DIR = new File(FileUtils.getTempDirectory(), "UpsertRunner");
   private static final String TABLE_NAME = "MyTable";

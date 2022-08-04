@@ -92,7 +92,7 @@ public class RecordTransformerTest {
         new TableConfigBuilder(TableType.OFFLINE).setTableName("testTable").setIngestionConfig(ingestionConfig).build();
 
     // expression false, not filtered
-    ingestionConfig.setFilterConfig(new FilterConfig("Groovy({svInt > 123}, svInt)"));
+    ingestionConfig.setFilterConfig(new FilterConfig("svInt > 123"));
     GenericRow genericRow = getRecord();
     tableConfig.setIngestionConfig(ingestionConfig);
     RecordTransformer transformer = new FilterTransformer(tableConfig);

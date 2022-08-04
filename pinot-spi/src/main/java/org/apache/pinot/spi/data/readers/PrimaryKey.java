@@ -71,7 +71,12 @@ public class PrimaryKey implements Serializable {
 
   @Override
   public int hashCode() {
-    return Arrays.hashCode(_values);
+//    return Arrays.hashCode(_values);
+    return hashCodeFirstIndex();
+  }
+
+  public int hashCodeFirstIndex() {
+   return _values[0].hashCode();
   }
 
   @Override

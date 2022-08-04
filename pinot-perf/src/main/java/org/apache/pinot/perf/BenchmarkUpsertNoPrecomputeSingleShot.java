@@ -75,6 +75,7 @@ import org.openjdk.jmh.annotations.Scope;
 import org.openjdk.jmh.annotations.Setup;
 import org.openjdk.jmh.annotations.State;
 import org.openjdk.jmh.annotations.TearDown;
+import org.openjdk.jmh.annotations.Threads;
 import org.openjdk.jmh.annotations.Warmup;
 import org.openjdk.jmh.infra.BenchmarkParams;
 import org.openjdk.jmh.infra.Blackhole;
@@ -95,7 +96,7 @@ import org.roaringbitmap.PeekableIntIterator;
 @CompilerControl(CompilerControl.Mode.DONT_INLINE)
 public class BenchmarkUpsertNoPrecomputeSingleShot {
 
-  @Param({"CHRONICLE_MAP", "ROCKSDB"})
+  @Param({"ROCKSDB"})
   private String _metadataStoreType;
 
   @Param({"10000000"})
@@ -106,8 +107,7 @@ public class BenchmarkUpsertNoPrecomputeSingleShot {
   private int _numSegments;
 
   @Param({"100000000"})
-
-  private long _keyCardinality;
+  private int _keyCardinality;
 
   @Param({"100"})
   private int _keyStringLength;
@@ -139,7 +139,8 @@ public class BenchmarkUpsertNoPrecomputeSingleShot {
     ChainedOptionsBuilder opt = new OptionsBuilder().include(BenchmarkUpsertNoPrecomputeSingleShot.class.getSimpleName());
 
     if (args.length > 0 && args[0].equals("async")) {
-      opt = opt.addProfiler(AsyncProfiler.class, "output=flamegraph")
+      opt = opt
+          .addProfiler(AsyncProfiler.class, "output=flamegraph")
           .jvmArgsAppend("-XX:+UnlockDiagnosticVMOptions", "-XX:+DebugNonSafepoints");
     }
     new Runner(opt.build()).run();
@@ -189,13 +190,36 @@ public class BenchmarkUpsertNoPrecomputeSingleShot {
   }
 
   @Benchmark
-  public void upsertAddRecord(BenchmarkParams params, Blackhole blackhole) {
+  public void upsertAddRecordRandomKeys(BenchmarkParams params, Blackhole blackhole) {
     int rowsPushed = 0;
     try {
       Random random = new Random(42);
       for (IndexSegment indexSegment : _indexSegmentsPerImpl.get(_partitionUpsertMetadataManager)) {
         for (int i = 0; i < _numRowsPerSegment; i++) {
-          String sval = StringUtils.leftPad(String.valueOf(i % _keyCardinality), _keyStringLength, '#');
+          String sval = StringUtils.leftPad(String.valueOf(random.nextInt(_keyCardinality)), _keyStringLength, '#');
+          String[] pkValues = new String[]{sval};
+          PrimaryKey pk = new PrimaryKey(pkValues);
+          RecordInfo recordInfo = new RecordInfo(pk, random.nextInt() % _numRowsPerSegment, _random.nextLong());
+          _partitionUpsertMetadataManager.addRecord(indexSegment, recordInfo);
+          blackhole.consume(recordInfo);
+          rowsPushed++;
+        }
+      }
+    } catch (Exception e) {
+      tearDown(params);
+      throw new RuntimeException("Benchmark failed after publishing numRows: " + rowsPushed + " due to error ", e);
+//      e.printStackTrace();
+    }
+  }
+
+  //@Benchmark
+  public void upsertAddRecordAllUniqueKeysSeq(BenchmarkParams params, Blackhole blackhole) {
+    int rowsPushed = 0;
+    try {
+      Random random = new Random(42);
+      for (IndexSegment indexSegment : _indexSegmentsPerImpl.get(_partitionUpsertMetadataManager)) {
+        for (int i = 0; i < _numRowsPerSegment; i++) {
+          String sval = StringUtils.leftPad(String.valueOf(i), _keyStringLength, '#');
           String[] pkValues = new String[]{sval};
           PrimaryKey pk = new PrimaryKey(pkValues);
           RecordInfo recordInfo = new RecordInfo(pk, random.nextInt() % _numRowsPerSegment, _random.nextLong());
