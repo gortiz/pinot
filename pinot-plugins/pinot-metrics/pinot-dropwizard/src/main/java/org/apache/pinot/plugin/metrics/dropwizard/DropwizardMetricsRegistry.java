@@ -19,9 +19,11 @@
 package org.apache.pinot.plugin.metrics.dropwizard;
 
 import com.codahale.metrics.Gauge;
+import com.codahale.metrics.Histogram;
 import com.codahale.metrics.Metric;
 import com.codahale.metrics.MetricRegistry;
 import com.codahale.metrics.MetricRegistryListener;
+import com.codahale.metrics.Timer;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.concurrent.TimeUnit;
@@ -34,6 +36,7 @@ import org.apache.pinot.spi.metrics.PinotMetricName;
 import org.apache.pinot.spi.metrics.PinotMetricsRegistry;
 import org.apache.pinot.spi.metrics.PinotMetricsRegistryListener;
 import org.apache.pinot.spi.metrics.PinotTimer;
+import org.mpierce.metrics.reservoir.hdrhistogram.HdrHistogramReservoir;
 
 
 public class DropwizardMetricsRegistry implements PinotMetricsRegistry {
@@ -67,12 +70,14 @@ public class DropwizardMetricsRegistry implements PinotMetricsRegistry {
 
   @Override
   public PinotTimer newTimer(PinotMetricName name, TimeUnit durationUnit, TimeUnit rateUnit) {
-    return new DropwizardTimer(_metricRegistry.timer(name.getMetricName().toString()));
+    MetricRegistry.MetricSupplier<Timer> metricSupplier = () -> new Timer(new HdrHistogramReservoir());
+    return new DropwizardTimer(_metricRegistry.timer(name.getMetricName().toString(), metricSupplier));
   }
 
   @Override
   public PinotHistogram newHistogram(PinotMetricName name, boolean biased) {
-    return new DropWizardHistogram(_metricRegistry.histogram(name.getMetricName().toString()));
+    MetricRegistry.MetricSupplier<Histogram> metricSupplier = () -> new Histogram(new HdrHistogramReservoir());
+    return new DropWizardHistogram(_metricRegistry.histogram(name.getMetricName().toString(), metricSupplier));
   }
 
   @Override
