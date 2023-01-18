@@ -16,17 +16,20 @@
 # specific language governing permissions and limitations
 # under the License.
 #
-ARG PINOT_BASE_IMAGE_TAG=openjdk11
+ARG PINOT_BASE_IMAGE_TAG=11-amazoncorretto
 FROM apachepinot/pinot-base-build:${PINOT_BASE_IMAGE_TAG} AS pinot_build_env
 
 LABEL MAINTAINER=dev@pinot.apache.org
 
 ARG PINOT_BRANCH=master
-ARG KAFKA_VERSION=2.0
 ARG JDK_VERSION=11
 ARG PINOT_GIT_URL="https://github.com/apache/pinot.git"
 ARG CI=true
-RUN echo "Trying to build Pinot from [ ${PINOT_GIT_URL} ] on branch [ ${PINOT_BRANCH} ] with Kafka version [ ${KAFKA_VERSION} ] and CI [ ${CI} ]"
+
+RUN echo "Build Pinot based on image: apachepinot/pinot-base-build:${PINOT_BASE_IMAGE_TAG}"
+RUN echo "Current build system CPU arch is [ $(uname -m) ]"
+
+RUN echo "Trying to build Pinot from [ ${PINOT_GIT_URL} ] on branch [ ${PINOT_BRANCH} ] and CI [ ${CI} ]"
 ENV PINOT_HOME=/opt/pinot
 ENV PINOT_BUILD_DIR=/opt/pinot-build
 ENV MAVEN_HOME /usr/share/maven
@@ -35,7 +38,7 @@ ENV MAVEN_CONFIG /opt/.m2
 RUN git clone ${PINOT_GIT_URL} ${PINOT_BUILD_DIR} && \
     cd ${PINOT_BUILD_DIR} && \
     git checkout ${PINOT_BRANCH} && \
-    mvn install package -DskipTests -Pbin-dist -Pbuild-shaded-jar -Djdk.version=${JDK_VERSION} -T1C && \
+    mvn install package -DskipTests -Pbin-dist -Pbuild-shaded-jar -Djdk.version=${JDK_VERSION} -T1C -pl \!:pinot-connectors,\!:pinot-spark-common,\!:pinot-spark-common,\!:pinot-spark-2-connector,\!:pinot-spark-3-connector,\!:pinot-flink-connector,\!:pinot-compatibility-verifier,\!:pinot-perf,\!:pinot-integration-tests,\!:pinot-integration-test-base && \
     rm -rf /root/.m2 && \
     mkdir -p ${PINOT_HOME}/configs && \
     mkdir -p ${PINOT_HOME}/data && \
@@ -55,6 +58,7 @@ COPY --from=pinot_build_env ${PINOT_HOME} ${PINOT_HOME}
 COPY bin ${PINOT_HOME}/bin
 COPY etc ${PINOT_HOME}/etc
 COPY examples ${PINOT_HOME}/examples
+RUN rm -rf ${PINOT_HOME}/plugins/pinot-input-format/pinot-orc ${PINOT_HOME}/plugins-external
 
 RUN wget -O ${PINOT_HOME}/etc/jmx_prometheus_javaagent/jmx_prometheus_javaagent-0.12.0.jar https://repo1.maven.org/maven2/io/prometheus/jmx/jmx_prometheus_javaagent/0.12.0/jmx_prometheus_javaagent-0.12.0.jar
 RUN wget -O ${PINOT_HOME}/etc/jmx_prometheus_javaagent/jmx_prometheus_javaagent-0.16.1.jar https://repo1.maven.org/maven2/io/prometheus/jmx/jmx_prometheus_javaagent/0.16.1/jmx_prometheus_javaagent-0.16.1.jar && \
