@@ -16,26 +16,16 @@
  * specific language governing permissions and limitations
  * under the License.
  */
-package org.apache.pinot.core.operator.blocks;
 
-import java.util.Map;
-import org.apache.pinot.common.request.context.ExpressionContext;
-import org.apache.pinot.core.common.BlockValSet;
-import org.apache.pinot.core.operator.transform.function.TransformFunction;
+package org.apache.pinot.segment.local.segment.index.bloom;
 
+import com.google.auto.service.AutoService;
+import org.apache.pinot.segment.spi.index.IndexPlugin;
 
-/**
- * Transform Block servers as a pass-through to projection block.
- */
-public class PassThroughTransformBlock extends TransformBlock {
-
-  public PassThroughTransformBlock(ProjectionBlock projectionBlock,
-      Map<ExpressionContext, TransformFunction> transformFunctionMap) {
-    super(projectionBlock, transformFunctionMap);
-  }
-
+@AutoService(IndexPlugin.class)
+public class BloomIndexPlugin implements IndexPlugin<BloomIndexType> {
   @Override
-  public BlockValSet getBlockValueSet(ExpressionContext expression) {
-    return _projectionBlock.getBlockValueSet(expression.getIdentifier());
+  public BloomIndexType getIndexType() {
+    return BloomIndexType.INSTANCE;
   }
 }
