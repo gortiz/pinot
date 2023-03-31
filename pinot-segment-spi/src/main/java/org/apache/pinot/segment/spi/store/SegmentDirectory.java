@@ -222,7 +222,7 @@ public abstract class SegmentDirectory implements Closeable {
      * @return PinotDataBufferOld that writers can update
      * @throws IOException
      */
-    // NOTE: an interface like readFrom(File f, String column, IndexType type, int sizeBytes) will be safe
+    // NOTE: an interface like readFrom(File f, String column, IndexType<?, ?, ?>, int sizeBytes) will be safe
     // but it can lead to potential endianness issues. Endianness used to create data may not be
     // same as PinotDataBufferOld
     public abstract PinotDataBuffer newIndexFor(String columnName, IndexType<?, ?, ?> indexType, long sizeBytes)

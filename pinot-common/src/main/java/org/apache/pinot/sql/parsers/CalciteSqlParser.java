@@ -61,6 +61,8 @@ import org.apache.pinot.common.request.Expression;
 import org.apache.pinot.common.request.ExpressionType;
 import org.apache.pinot.common.request.Function;
 import org.apache.pinot.common.request.Identifier;
+import org.apache.pinot.common.request.Join;
+import org.apache.pinot.common.request.JoinType;
 import org.apache.pinot.common.request.PinotQuery;
 import org.apache.pinot.common.utils.config.QueryOptionsUtils;
 import org.apache.pinot.common.utils.request.RequestUtils;
@@ -172,6 +174,9 @@ public class CalciteSqlParser {
       }
       tableNames.addAll(extractTableNamesFromNode(((SqlWith) sqlNode).body));
       tableNames.removeAll(aliases);
+    } else if (sqlNode instanceof SqlExplain) {
+      SqlExplain explain = (SqlExplain) sqlNode;
+      tableNames.addAll(extractTableNamesFromNode(explain.getExplicandum()));
     }
     return tableNames;
   }
@@ -450,12 +455,7 @@ public class CalciteSqlParser {
     // FROM
     SqlNode fromNode = selectNode.getFrom();
     if (fromNode != null) {
-      DataSource dataSource = new DataSource();
-      dataSource.setTableName(fromNode.toString());
-      pinotQuery.setDataSource(dataSource);
-      if (fromNode instanceof SqlSelect || fromNode instanceof SqlOrderBy) {
-        dataSource.setSubquery(compileSqlNodeToPinotQuery(fromNode));
-      }
+      pinotQuery.setDataSource(compileToDataSource(fromNode));
     }
     // WHERE
     SqlNode whereNode = selectNode.getWhere();
@@ -490,6 +490,62 @@ public class CalciteSqlParser {
 
     queryRewrite(pinotQuery);
     return pinotQuery;
+  }
+
+  private static DataSource compileToDataSource(SqlNode sqlNode) {
+    DataSource dataSource = new DataSource();
+    switch (sqlNode.getKind()) {
+      case IDENTIFIER:
+        dataSource.setTableName(sqlNode.toString());
+        break;
+      case AS:
+        List<SqlNode> operandList = ((SqlBasicCall) sqlNode).getOperandList();
+        dataSource.setSubquery(compileSqlNodeToPinotQuery(operandList.get(0)));
+        dataSource.setTableName(operandList.get(1).toString());
+        break;
+      case SELECT:
+      case ORDER_BY:
+        dataSource.setSubquery(compileSqlNodeToPinotQuery(sqlNode));
+        break;
+      case JOIN:
+        dataSource.setJoin(compileToJoin((SqlJoin) sqlNode));
+        break;
+      default:
+        throw new IllegalStateException("Unsupported SQL node kind as DataSource: " + sqlNode.getKind());
+    }
+    return dataSource;
+  }
+
+  private static Join compileToJoin(SqlJoin sqlJoin) {
+    Join join = new Join();
+    switch (sqlJoin.getJoinType()) {
+      case INNER:
+        join.setType(JoinType.INNER);
+        break;
+      case LEFT:
+        join.setType(JoinType.LEFT);
+        break;
+      case RIGHT:
+        join.setType(JoinType.RIGHT);
+        break;
+      case FULL:
+        join.setType(JoinType.FULL);
+        break;
+      default:
+        throw new IllegalStateException("Unsupported join type: " + sqlJoin.getJoinType());
+    }
+    join.setLeft(compileToDataSource(sqlJoin.getLeft()));
+    join.setRight(compileToDataSource(sqlJoin.getRight()));
+    switch (sqlJoin.getConditionType()) {
+      case ON:
+        join.setCondition(toExpression(sqlJoin.getCondition()));
+        break;
+      case NONE:
+        break;
+      default:
+        throw new IllegalStateException("Unsupported join condition type: " + sqlJoin.getConditionType());
+    }
+    return join;
   }
 
   private static void queryRewrite(PinotQuery pinotQuery) {

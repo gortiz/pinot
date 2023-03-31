@@ -75,7 +75,7 @@ public class StarTreeLoaderUtils {
         FixedBitSVForwardIndexReaderV2 forwardIndex =
             new FixedBitSVForwardIndexReaderV2(forwardIndexDataBuffer, numDocs, columnMetadata.getBitsPerElement());
         dataSourceMap.put(dimension, new StarTreeDataSource(columnMetadata.getFieldSpec(), numDocs, forwardIndex,
-            indexContainerMap.get(dimension).getDictionary()));
+            indexContainerMap.get(dimension).getIndex(StandardIndexes.dictionary())));
       }
 
       // Load metric (function-column pair) forward indexes

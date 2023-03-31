@@ -29,7 +29,6 @@ import java.io.RandomAccessFile;
 import java.nio.ByteOrder;
 import java.nio.channels.FileChannel;
 import java.util.ArrayList;
-import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
@@ -83,7 +82,7 @@ class SingleFileIndexDirectory extends ColumnIndexDirectory {
   private SegmentMetadataImpl _segmentMetadata;
   private final ReadMode _readMode;
   private final File _indexFile;
-  private final Map<IndexKey, IndexEntry> _columnEntries;
+  private final TreeMap<IndexKey, IndexEntry> _columnEntries;
   private final List<PinotDataBuffer> _allocBuffers;
 
   // For V3 segment format, the index cleanup consists of two steps: mark and sweep.
@@ -117,7 +116,7 @@ class SingleFileIndexDirectory extends ColumnIndexDirectory {
     if (!_indexFile.exists()) {
       _indexFile.createNewFile();
     }
-    _columnEntries = new HashMap<>(_segmentMetadata.getAllColumns().size());
+    _columnEntries = new TreeMap<>();
     _allocBuffers = new ArrayList<>();
     load();
   }
@@ -141,7 +140,7 @@ class SingleFileIndexDirectory extends ColumnIndexDirectory {
 
   @Override
   public boolean hasIndexFor(String column, IndexType<?, ?, ?> type) {
-    if (type.equals(StandardIndexes.text())) {
+    if (type == StandardIndexes.text()) {
       return TextIndexUtils.hasTextIndex(_segmentDirectory, column);
     }
     IndexKey key = new IndexKey(column, type);
@@ -160,7 +159,8 @@ class SingleFileIndexDirectory extends ColumnIndexDirectory {
   }
 
   // This is using extra resources right now which can be changed.
-  private PinotDataBuffer allocNewBufferInternal(String column, IndexType<?, ?, ?> indexType, long size, String context)
+  private PinotDataBuffer allocNewBufferInternal(String column, IndexType<?, ?, ?> indexType, long size,
+      String context)
       throws IOException {
 
     IndexKey key = new IndexKey(column, indexType);
@@ -327,7 +327,7 @@ class SingleFileIndexDirectory extends ColumnIndexDirectory {
     File tmpIdxFile = new File(_segmentDirectory, V1Constants.INDEX_FILE_NAME + ".tmp");
     // Sort indices by column name and index type while copying, so that the
     // new index_map file is easy to inspect for troubleshooting.
-    List<IndexEntry> retained = copyIndices(_indexFile, tmpIdxFile, new TreeMap<>(_columnEntries));
+    List<IndexEntry> retained = copyIndices(_indexFile, tmpIdxFile, _columnEntries);
 
     FileUtils.deleteQuietly(_indexFile);
     Preconditions
@@ -359,7 +359,7 @@ class SingleFileIndexDirectory extends ColumnIndexDirectory {
   @Override
   public void removeIndex(String columnName, IndexType<?, ?, ?> indexType) {
     // Text index is kept in its own files, thus can be removed directly.
-    if (indexType.equals(StandardIndexes.text())) {
+    if (indexType == StandardIndexes.text()) {
       TextIndexUtils.cleanupTextIndex(_segmentDirectory, columnName);
       return;
     }
@@ -374,7 +374,7 @@ class SingleFileIndexDirectory extends ColumnIndexDirectory {
   public Set<String> getColumnsWithIndex(IndexType<?, ?, ?> type) {
     Set<String> columns = new HashSet<>();
     // TEXT_INDEX is not tracked via _columnEntries, so handled separately.
-    if (type.equals(StandardIndexes.text())) {
+    if (type == StandardIndexes.text()) {
       for (String column : _segmentMetadata.getAllColumns()) {
         if (TextIndexUtils.hasTextIndex(_segmentDirectory, column)) {
           columns.add(column);
@@ -407,7 +407,7 @@ class SingleFileIndexDirectory extends ColumnIndexDirectory {
    * @throws IOException from FileChannels upon failure to r/w the index files, and simply raised to caller.
    */
   @VisibleForTesting
-  static List<IndexEntry> copyIndices(File srcFile, File destFile, Map<IndexKey, IndexEntry> indicesToCopy)
+  static List<IndexEntry> copyIndices(File srcFile, File destFile, TreeMap<IndexKey, IndexEntry> indicesToCopy)
       throws IOException {
     // Copy index from original index file and append to temp file.
     // Keep track of the index entry pointing to the temp index file.
