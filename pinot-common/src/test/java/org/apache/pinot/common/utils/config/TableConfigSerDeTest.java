@@ -536,14 +536,13 @@ public class TableConfigSerDeTest {
     FieldConfig secondFieldConfig = fieldConfigList.get(1);
     assertEquals(secondFieldConfig.getName(), "column2");
     assertNull(secondFieldConfig.getEncodingType());
-    assertNull(secondFieldConfig.getIndexType());
-    assertEquals(secondFieldConfig.getIndexTypes().size(), 0);
+    assertEquals(secondFieldConfig.getIndexTypes(), Collections.emptyList());
     assertNull(secondFieldConfig.getProperties());
 
     FieldConfig thirdFieldConfig = fieldConfigList.get(2);
     assertEquals(thirdFieldConfig.getName(), "column3");
     assertEquals(thirdFieldConfig.getEncodingType(), FieldConfig.EncodingType.RAW);
-    assertNull(thirdFieldConfig.getIndexType());
+    assertEquals(thirdFieldConfig.getIndexTypes(), Collections.emptyList());
     assertEquals(thirdFieldConfig.getCompressionCodec(), FieldConfig.CompressionCodec.SNAPPY);
     assertNull(thirdFieldConfig.getProperties());
   }

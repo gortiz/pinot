@@ -343,7 +343,7 @@ public class IndexLoadingConfig {
     if (fieldConfigList != null) {
       for (FieldConfig fieldConfig : fieldConfigList) {
         String column = fieldConfig.getName();
-        if (fieldConfig.getIndexType() == FieldConfig.IndexType.TEXT) {
+        if (fieldConfig.getIndexTypes().contains(FieldConfig.IndexType.TEXT)) {
           _textIndexColumns.add(column);
           Map<String, String> propertiesMap = fieldConfig.getProperties();
           if (TextIndexUtils.isFstTypeNative(propertiesMap)) {
@@ -359,7 +359,7 @@ public class IndexLoadingConfig {
     if (fieldConfigList != null) {
       for (FieldConfig fieldConfig : fieldConfigList) {
         String column = fieldConfig.getName();
-        if (fieldConfig.getIndexType() == FieldConfig.IndexType.FST) {
+        if (fieldConfig.getIndexTypes().contains(FieldConfig.IndexType.FST)) {
           _fstIndexColumns.add(column);
         }
       }
@@ -370,7 +370,7 @@ public class IndexLoadingConfig {
     List<FieldConfig> fieldConfigList = tableConfig.getFieldConfigList();
     if (fieldConfigList != null) {
       for (FieldConfig fieldConfig : fieldConfigList) {
-        if (fieldConfig.getIndexType() == FieldConfig.IndexType.H3) {
+        if (fieldConfig.getIndexTypes().contains(FieldConfig.IndexType.H3)) {
           //noinspection ConstantConditions
           _h3IndexConfigs.put(fieldConfig.getName(), new H3IndexConfig(fieldConfig.getProperties()));
         }
