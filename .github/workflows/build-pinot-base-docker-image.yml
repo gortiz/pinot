@@ -30,6 +30,11 @@ jobs:
       matrix:
         baseImageType: [ "build", "runtime" ]
         openJdkDist: [ "amazoncorretto", "ms-openjdk" ]
+        jdk_version: [11, 17]
+        includes:
+          # Remove this and add jdk_version 21 above once it is released (release date: 2023-09-19)
+          - openJdkDist: "openjdk"
+            jdk_version: 21
     steps:
       - name: Login to DockerHub
         uses: docker/login-action@v2
