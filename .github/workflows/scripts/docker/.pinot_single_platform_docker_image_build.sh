@@ -54,6 +54,7 @@ docker build \
   --build-arg PINOT_GIT_URL=${PINOT_GIT_URL} \
   --build-arg PINOT_BRANCH=${PINOT_BRANCH} \
   --build-arg JDK_VERSION=${JDK_VERSION} \
+  --build-arg PINOT_BASE_IMAGE_TAG=${BASE_IMAGE_TAG}
   ${DOCKER_BUILD_TAGS} \
   .
 
