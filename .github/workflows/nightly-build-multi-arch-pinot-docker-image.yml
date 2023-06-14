@@ -42,7 +42,13 @@ jobs:
     strategy:
       matrix:
         arch: [ "amd64", "arm64" ]
-        base-image-tag: [ "11-amazoncorretto", "11-ms-openjdk" ]
+        base-image-flavour: [ "amazoncorretto", "ms-openjdk"]
+        jdk_version: [11, 17]
+        include:
+          # Remove this and add jdk_version 21 above once it is released (release date: 2023-09-19)
+          - arch: "amd64"
+            base-image-flavour: "openjdk"
+            jdk_version: 21
     steps:
     - name: Login to DockerHub
       uses: docker/login-action@v2
@@ -61,10 +67,11 @@ jobs:
         DOCKER_FILE_BASE_DIR: "docker/images/pinot"
         DOCKER_IMAGE_NAME: "apachepinot/pinot"
         BUILD_PLATFORM: "linux/${{ matrix.arch }}"
-        BASE_IMAGE_TAG: "${{ matrix.base-image-tag }}"
+        BASE_IMAGE_TAG: "${{jdk_version}}-${{ matrix.base-image-tag }}"
         PINOT_GIT_URL: "https://github.com/apache/pinot.git"
         PINOT_BRANCH: "${{needs.generate-build-info.outputs.commit-id}}"
         TAGS: "${{needs.generate-build-info.outputs.tags}}"
+        JDK_VERSION: ${{jdk_version}}
       run: .github/workflows/scripts/docker/.pinot_single_platform_docker_image_build.sh
   create-multi-arch-manifest:
     name: Create Multi-Arch Manifest
