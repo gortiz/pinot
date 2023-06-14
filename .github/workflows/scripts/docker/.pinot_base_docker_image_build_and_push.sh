@@ -18,6 +18,8 @@
 # under the License.
 #
 
+set -e
+
 if [ -z "${BUILD_PLATFORM}" ]; then
   exit 1
 fi
