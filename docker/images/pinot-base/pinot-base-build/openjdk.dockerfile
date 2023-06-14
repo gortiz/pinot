@@ -18,7 +18,8 @@
 #
 ARG JAVA_VERSION=11
 ARG JDK_IMAGE=openjdk
-FROM ${JDK_IMAGE}:${JAVA_VERSION}
+# At 2023-06-14, slim is the only openjdk flavour without medium, high or critical vulns
+FROM ${JDK_IMAGE}:${JAVA_VERSION}-jdk-slim
 
 LABEL MAINTAINER=dev@pinot.apache.org
 
