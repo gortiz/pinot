@@ -79,7 +79,9 @@ public class ReceivingMailbox {
     try {
       if (_blocks.offer(block, timeoutMs, TimeUnit.MILLISECONDS)) {
         if (_errorBlock.get() == null) {
-          LOGGER.debug("==[MAILBOX]== Returned block from mailbox: " + _id);
+          if (LOGGER.isDebugEnabled()) {
+            LOGGER.debug("==[MAILBOX]== Returned block from mailbox: " + _id);
+          }
           _receiveMailCallback.accept(MailboxIdUtils.toOpChainId(_id));
           return true;
         } else {

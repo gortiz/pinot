@@ -62,7 +62,10 @@ public class MailboxReceiveOperator extends BaseMailboxReceiveOperator {
       // - Return the first content block
       // - If no content block found but there are mailboxes not finished, return no-op block
       // - If all content blocks are already returned, return end-of-stream block
-      LOGGER.trace("==[RECEIVE]== Enter getNextBlock from: " + _context.getId() + " mailboxSize: " + _mailboxes.size());
+      if (LOGGER.isTraceEnabled()) {
+        LOGGER.trace("==[RECEIVE]== Enter getNextBlock from: " + _context.getId() + " mailboxSize: "
+            + _mailboxes.size());
+      }
       int numMailboxes = _mailboxes.size();
       for (int i = 0; i < numMailboxes; i++) {
         ReceivingMailbox mailbox = _mailboxes.remove();
@@ -70,7 +73,9 @@ public class MailboxReceiveOperator extends BaseMailboxReceiveOperator {
 
         // Release the mailbox when the block is end-of-stream
         if (block != null && block.isSuccessfulEndOfStreamBlock()) {
-          LOGGER.debug("==[RECEIVE]== EOS received : " + _context.getId() + " in mailbox: " + mailbox.getId());
+          if (LOGGER.isDebugEnabled()) {
+            LOGGER.debug("==[RECEIVE]== EOS received : " + _context.getId() + " in mailbox: " + mailbox.getId());
+          }
           _mailboxService.releaseReceivingMailbox(mailbox);
           _opChainStats.getOperatorStatsMap().putAll(block.getResultMetadata());
           continue;
@@ -82,15 +87,21 @@ public class MailboxReceiveOperator extends BaseMailboxReceiveOperator {
           if (block.isErrorBlock()) {
             _errorBlock = block;
           }
-          LOGGER.trace("==[RECEIVE]== Returned block from : " + _context.getId() + " in mailbox: " + mailbox.getId());
+          if (LOGGER.isTraceEnabled()) {
+            LOGGER.trace("==[RECEIVE]== Returned block from : " + _context.getId() + " in mailbox: " + mailbox.getId());
+          }
           return block;
         }
       }
       if (_mailboxes.isEmpty()) {
-        LOGGER.debug("==[RECEIVE]== Finished : " + _context.getId());
+        if (LOGGER.isDebugEnabled()) {
+          LOGGER.debug("==[RECEIVE]== Finished : " + _context.getId());
+        }
         return TransferableBlockUtils.getEndOfStreamTransferableBlock();
       } else {
-        LOGGER.debug("==[RECEIVE]== Yield : " + _context.getId());
+        if (LOGGER.isDebugEnabled()) {
+          LOGGER.debug("==[RECEIVE]== Yield : " + _context.getId());
+        }
         _context.yield();
       }
     }

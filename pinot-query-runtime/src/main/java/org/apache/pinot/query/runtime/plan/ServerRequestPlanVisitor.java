@@ -105,7 +105,9 @@ public class ServerRequestPlanVisitor implements PlanNodeVisitor<Void, ServerPla
     } else {
       pinotQuery.setLimit(DEFAULT_LEAF_NODE_LIMIT);
     }
-    LOGGER.debug("QueryID" + requestId + " leafNodeLimit:" + leafNodeLimit);
+    if (LOGGER.isDebugEnabled()) {
+      LOGGER.debug("QueryID" + requestId + " leafNodeLimit:" + leafNodeLimit);
+    }
     pinotQuery.setExplain(false);
     ServerPlanRequestContext context =
         new ServerPlanRequestContext(mailboxService, schedulerService, requestId, stagePlan.getStageId(), timeoutMs,

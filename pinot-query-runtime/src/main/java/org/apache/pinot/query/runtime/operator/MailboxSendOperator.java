@@ -126,7 +126,9 @@ public class MailboxSendOperator extends MultiStageOperator {
   @Override
   protected TransferableBlock getNextBlock() {
     TransferableBlock transferableBlock;
-    LOGGER.debug("==[SEND]== Enter getNextBlock from: " + _context.getId());
+    if (LOGGER.isDebugEnabled()) {
+      LOGGER.debug("==[SEND]== Enter getNextBlock from: " + _context.getId());
+    }
     try {
       transferableBlock = _sourceOperator.nextBlock();
       while (!transferableBlock.isEndOfStreamBlock()) {

@@ -41,7 +41,9 @@ public class InMemorySendingMailbox implements SendingMailbox {
 
   @Override
   public void send(TransferableBlock block) {
-    LOGGER.debug("==[IN_MEM SEND]== sending data to: " + _id);
+    if (LOGGER.isDebugEnabled()) {
+      LOGGER.debug("==[IN_MEM SEND]== sending data to: " + _id);
+    }
     if (_receivingMailbox == null) {
       _receivingMailbox = _mailboxService.getReceivingMailbox(_id);
     }
