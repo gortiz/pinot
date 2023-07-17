@@ -31,9 +31,12 @@ import javax.annotation.Nullable;
 import org.apache.calcite.rel.core.JoinRelType;
 import org.apache.pinot.common.datablock.DataBlock;
 import org.apache.pinot.common.utils.DataSchema;
+import org.apache.pinot.core.data.table.AbstractKey;
 import org.apache.pinot.core.data.table.Key;
 import org.apache.pinot.query.planner.logical.RexExpression;
+import org.apache.pinot.query.planner.partitioning.FieldSelectionKeySelector;
 import org.apache.pinot.query.planner.partitioning.KeySelector;
+import org.apache.pinot.query.planner.partitioning.LightweightKeySelector;
 import org.apache.pinot.query.planner.plannode.JoinNode;
 import org.apache.pinot.query.runtime.blocks.TransferableBlock;
 import org.apache.pinot.query.runtime.blocks.TransferableBlockUtils;
@@ -158,6 +161,10 @@ public class HashJoinOperator extends MultiStageOperator {
   }
 
   private void buildBroadcastHashTable() {
+    // TODO: This is a test, here we assume we always store a FieldSelectionKeySelector on _rightKeySelector
+    FieldSelectionKeySelector rightKeySelector = (FieldSelectionKeySelector) _rightKeySelector;
+    LightweightKeySelector lightweightKeySelector = new LightweightKeySelector(rightKeySelector.getColumnIndices());
+
     TransferableBlock rightBlock = _rightTableOperator.nextBlock();
     while (!rightBlock.isNoOpBlock()) {
       if (rightBlock.isErrorBlock()) {
@@ -169,10 +176,16 @@ public class HashJoinOperator extends MultiStageOperator {
         return;
       }
       List<Object[]> container = rightBlock.getContainer();
+      // initialize the groups
+      for (Object[] row : container) {
+        _broadcastRightTable.computeIfAbsent(new Key(_rightKeySelector.getKey(row)),
+            (key) -> new ArrayList<>(INITIAL_HEURISTIC_SIZE));
+      }
+
       // put all the rows into corresponding hash collections keyed by the key selector function.
       for (Object[] row : container) {
-        ArrayList<Object[]> hashCollection = _broadcastRightTable.computeIfAbsent(
-            new Key(_rightKeySelector.getKey(row)), k -> new ArrayList<>(INITIAL_HEURISTIC_SIZE));
+        AbstractKey key = lightweightKeySelector.getKey(row);
+        ArrayList<Object[]> hashCollection = _broadcastRightTable.get(key);
         int size = hashCollection.size();
         if ((size & size - 1) == 0 && size < Integer.MAX_VALUE / 2) { // is power of 2
           hashCollection.ensureCapacity(size << 1);

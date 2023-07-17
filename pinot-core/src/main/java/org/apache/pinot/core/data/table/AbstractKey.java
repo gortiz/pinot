@@ -21,41 +21,44 @@ package org.apache.pinot.core.data.table;
 import java.util.Arrays;
 
 
-/**
- * Defines the key component of the record.
- * <p>Key can be used as the key in a map, and may only contain single-value columns.
- * <p>For each data type, the value should be stored as:
- * <ul>
- *   <li>INT: Integer</li>
- *   <li>LONG: Long</li>
- *   <li>FLOAT: Float</li>
- *   <li>DOUBLE: Double</li>
- *   <li>STRING: String</li>
- *   <li>BYTES: ByteArray</li>
- * </ul>
- *
- * TODO: Consider replacing Key with Record as the concept is very close and the implementation is the same
- */
 @SuppressWarnings("EqualsHashCode")
-public class Key extends AbstractKey {
-  private final Object[] _values;
-
-  public Key(Object[] values) {
-    _values = values;
-  }
+public abstract class AbstractKey {
+  public abstract Object[] getValues();
 
   @Override
-  public Object[] getValues() {
-    return _values;
+  public int hashCode() {
+    int result = 1;
+
+    for (Object element : getValues()) {
+      result = 31 * result + (element == null ? 0 : element.hashCode());
+    }
+
+    return result;
   }
 
   @Override
   public boolean equals(Object obj) {
-    return super.equals(obj);
+    if (obj == this) {
+      return true;
+    }
+    if (!(obj instanceof AbstractKey)) {
+      return false;
+    }
+    return equals(this, ((AbstractKey) obj));
   }
 
-  @Override
-  public int hashCode() {
-    return Arrays.hashCode(_values);
+  public static boolean equals(AbstractKey k1, AbstractKey k2) {
+    if (k1 == k2) {
+      return true;
+    }
+    if (k1 instanceof LightweightKey) {
+      return ((LightweightKey) k1).lightweightEquals(k2);
+    }
+    if (k2 instanceof LightweightKey) {
+      return ((LightweightKey) k2).lightweightEquals(k1);
+    }
+    Object[] val1 = k1.getValues();
+    Object[] val2 = k2.getValues();
+    return Arrays.equals(val1, val2);
   }
 }
