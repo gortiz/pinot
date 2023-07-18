@@ -26,6 +26,7 @@ import java.util.Map;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeoutException;
+import java.util.function.Function;
 import org.apache.helix.HelixManager;
 import org.apache.helix.store.zk.ZkHelixPropertyStore;
 import org.apache.helix.zookeeper.datamodel.ZNRecord;
@@ -107,12 +108,18 @@ public class QueryRunner {
     try {
       long releaseMs = config.getProperty(QueryConfig.KEY_OF_SCHEDULER_RELEASE_TIMEOUT_MS,
           QueryConfig.DEFAULT_SCHEDULER_RELEASE_TIMEOUT_MS);
-      _queryWorkerIntermExecutorService = Executors.newCachedThreadPool(
-          new NamedThreadFactory("query_intermediate_worker_on_" + _port + "_port"));
+
+      Function<String, ExecutorService> executorFactory = (prefix) -> {
+        try {
+          return ExecutorServiceBuilder.create(prefix);
+        } catch (ClassNotFoundException | NoSuchMethodException e) {
+          throw new RuntimeException(e);
+        }
+      };
+      _queryWorkerIntermExecutorService = executorFactory.apply("query_intermediate_worker_on_" + _port + "_port");
       _queryWorkerLeafExecutorService = Executors.newFixedThreadPool(ResourceManager.DEFAULT_QUERY_WORKER_THREADS,
           new NamedThreadFactory("query_leaf_worker_on_" + _port + "_port"));
-      _queryRunnerExecutorService = Executors.newCachedThreadPool(
-          new NamedThreadFactory("query_runner_on_" + _port + "_port"));
+      _queryRunnerExecutorService = executorFactory.apply("query_runner_on_" + _port + "_port");
       _leafScheduler = new LeafSchedulerService(getQueryRunnerExecutorService());
       _intermScheduler = new LeafSchedulerService(getQueryWorkerIntermExecutorService());
       _mailboxService = new MailboxService(_hostname, _port, config, _intermScheduler::setDataAvailable);
