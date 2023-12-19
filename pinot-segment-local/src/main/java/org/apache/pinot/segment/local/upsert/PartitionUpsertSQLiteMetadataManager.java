@@ -87,7 +87,11 @@ public class PartitionUpsertSQLiteMetadataManager implements IPartitionUpsertMet
   //need to create a second reverse lookup hashmap, any way to avoid it?
   private final ConcurrentHashMap<Integer, Object> _segmentIdToSegmentMap = new ConcurrentHashMap<>();
   private final AtomicInteger _segmentId = new AtomicInteger();
-  Connection _sqlDB = null;
+  private final Connection _sqlDB;
+  private final PreparedStatement _findStatement;
+  private final PreparedStatement _updateStatement;
+  private final PreparedStatement _insertStatement;
+
 
   // Reused for reading previous record during partial upsert
   private final GenericRow _reuse = new GenericRow();
@@ -104,11 +108,22 @@ public class PartitionUpsertSQLiteMetadataManager implements IPartitionUpsertMet
       Class.forName("org.sqlite.JDBC");
       _sqlDB = DriverManager.getConnection("jdbc:sqlite:" + PartitionUpsertSQLiteMetadataManager.class.getSimpleName() + System.currentTimeMillis() + ".db");
       Statement statement = _sqlDB.createStatement();
-      statement.executeUpdate("CREATE TABLE UPSERT_METADATA(\n" + "   UPSERT_KEY VARCHAR(200) PRIMARY KEY  NOT NULL,\n"
+      statement.executeUpdate("CREATE TABLE UPSERT_METADATA(\n" + "   UPSERT_KEY BLOB PRIMARY KEY  NOT NULL,\n"
           + "   SEGMENT_ID     INT    ,\n" + "   DOC_ID         INT    ,\n" + "   COMPARISON_VALUE  INT\n" + ");");
+      statement.executeUpdate("PRAGMA journal_mode=WAL;");
+      statement.executeUpdate("PRAGMA synchronous = OFF;");
       statement.close();
+
+      _findStatement = _sqlDB.prepareStatement("SELECT SEGMENT_ID, DOC_ID, COMPARISON_VALUE FROM UPSERT_METADATA WHERE UPSERT_KEY=?");
+      _updateStatement = _sqlDB.prepareStatement("UPDATE UPSERT_METADATA "
+          + " SET SEGMENT_ID=?, DOC_ID=?, COMPARISON_VALUE=? "
+          + " WHERE UPSERT_KEY = ?;");
+      _insertStatement = _sqlDB.prepareStatement("INSERT INTO UPSERT_METADATA(SEGMENT_ID,"
+          + "DOC_ID,COMPARISON_VALUE, UPSERT_KEY) VALUES(?, ?, ?, ?);");
+
     } catch ( Exception e ) {
       LOGGER.error("Could not open database connection", e);
+      throw new RuntimeException(e);
     }
 
   }
@@ -180,7 +195,7 @@ public class PartitionUpsertSQLiteMetadataManager implements IPartitionUpsertMet
           validDocIds.add(recordInfo.getDocId());
           RecordLocationWithSegmentId newRecordLocationWithSegmentId =
               new RecordLocationWithSegmentId(segmentId, recordInfo.getDocId(), recordInfo.getComparisonValue());
-          updateRecordLocation(recordInfo.getPrimaryKey(), newRecordLocationWithSegmentId);
+          insertRecordLocation(recordInfo.getPrimaryKey(), newRecordLocationWithSegmentId);
         }
       } catch (Exception e) {
         e.printStackTrace();
@@ -221,7 +236,7 @@ public class PartitionUpsertSQLiteMetadataManager implements IPartitionUpsertMet
           int segmentId = getSegmentId(segment);
           RecordLocationWithSegmentId newRecordLocationWithSegmentId =
               new RecordLocationWithSegmentId(segmentId, recordInfo.getDocId(), recordInfo.getComparisonValue());
-          updateRecordLocation(recordInfo.getPrimaryKey(), newRecordLocationWithSegmentId);
+          insertRecordLocation(recordInfo.getPrimaryKey(), newRecordLocationWithSegmentId);
         }
     } catch (Exception sqliteException) {
       // log error
@@ -248,8 +263,9 @@ public class PartitionUpsertSQLiteMetadataManager implements IPartitionUpsertMet
 
   private RecordLocationWithSegmentId getRecordLocation(PrimaryKey primaryKey) {
     try {
-      PreparedStatement statement = _sqlDB.prepareStatement("SELECT SEGMENT_ID, DOC_ID, COMPARISON_VALUE FROM UPSERT_METADATA WHERE UPSERT_KEY=?");
-      statement.setString(1, primaryKey.toString());
+//      PreparedStatement statement = _sqlDB.prepareStatement("SELECT SEGMENT_ID, DOC_ID, COMPARISON_VALUE FROM UPSERT_METADATA WHERE UPSERT_KEY=?");
+      PreparedStatement statement = _findStatement;
+      statement.setBytes(1, primaryKey.asBytes());
       ResultSet resultSet = statement.executeQuery();
       RecordLocationWithSegmentId recordLocationWithSegmentId = null;
       if(resultSet.next()) {
@@ -269,14 +285,34 @@ public class PartitionUpsertSQLiteMetadataManager implements IPartitionUpsertMet
 
   private void updateRecordLocation(PrimaryKey primaryKey, RecordLocationWithSegmentId recordLocationWithSegmentId) {
     try{
-      PreparedStatement statement = _sqlDB.prepareStatement("INSERT INTO UPSERT_METADATA(SEGMENT_ID,"
-          + "DOC_ID,COMPARISON_VALUE, UPSERT_KEY) VALUES(?, ?, ?, ?)\n"
-          + "  ON CONFLICT(UPSERT_KEY) DO UPDATE SET SEGMENT_ID=excluded.SEGMENT_ID, DOC_ID=excluded.DOC_ID, "
-          + "COMPARISON_VALUE=excluded.COMPARISON_VALUE;");
+//      PreparedStatement statement = _sqlDB.prepareStatement("INSERT INTO UPSERT_METADATA(SEGMENT_ID,"
+//          + "DOC_ID,COMPARISON_VALUE, UPSERT_KEY) VALUES(?, ?, ?, ?)\n"
+//          + "  ON CONFLICT(UPSERT_KEY) DO UPDATE SET SEGMENT_ID=excluded.SEGMENT_ID, DOC_ID=excluded.DOC_ID, "
+//          + "COMPARISON_VALUE=excluded.COMPARISON_VALUE;");
+      PreparedStatement statement = _updateStatement;
       statement.setInt(1, recordLocationWithSegmentId.getSegmentId());
       statement.setInt(2, recordLocationWithSegmentId.getDocId());
       statement.setLong(3, recordLocationWithSegmentId.getComparisonValue());
-      statement.setString(4, primaryKey.toString());
+      statement.setBytes(4, primaryKey.asBytes());
+      statement.executeUpdate();
+      statement.close();
+    } catch (Exception e) {
+      LOGGER.warn("Could not execute update", e);
+    }
+  }
+
+
+  private void insertRecordLocation(PrimaryKey primaryKey, RecordLocationWithSegmentId recordLocationWithSegmentId) {
+    try{
+//      PreparedStatement statement = _sqlDB.prepareStatement("INSERT INTO UPSERT_METADATA(SEGMENT_ID,"
+//          + "DOC_ID,COMPARISON_VALUE, UPSERT_KEY) VALUES(?, ?, ?, ?)\n"
+//          + "  ON CONFLICT(UPSERT_KEY) DO UPDATE SET SEGMENT_ID=excluded.SEGMENT_ID, DOC_ID=excluded.DOC_ID, "
+//          + "COMPARISON_VALUE=excluded.COMPARISON_VALUE;");
+      PreparedStatement statement = _insertStatement;
+      statement.setInt(1, recordLocationWithSegmentId.getSegmentId());
+      statement.setInt(2, recordLocationWithSegmentId.getDocId());
+      statement.setLong(3, recordLocationWithSegmentId.getComparisonValue());
+      statement.setBytes(4, primaryKey.asBytes());
       statement.executeUpdate();
       statement.close();
     } catch (Exception e) {

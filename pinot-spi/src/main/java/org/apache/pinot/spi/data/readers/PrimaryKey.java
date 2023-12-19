@@ -53,7 +53,7 @@ public class PrimaryKey implements Serializable {
   }
 
   public byte[] asBytesFirstStringIndex() {
-   byte[] arr =  ((String) _values[0]).getBytes(StandardCharsets.UTF_8);
+   byte[] arr = ((String) _values[0]).getBytes(StandardCharsets.UTF_8);
    return arr;
   }
 
