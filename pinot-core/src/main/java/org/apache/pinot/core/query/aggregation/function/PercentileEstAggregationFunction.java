@@ -19,6 +19,9 @@
 package org.apache.pinot.core.query.aggregation.function;
 
 import java.util.Map;
+import java.util.function.Supplier;
+import org.apache.datasketches.kll.KllDoublesSketch;
+import org.apache.datasketches.memory.Memory;
 import org.apache.pinot.common.request.context.ExpressionContext;
 import org.apache.pinot.common.utils.DataSchema.ColumnDataType;
 import org.apache.pinot.core.common.BlockValSet;
@@ -32,7 +35,7 @@ import org.apache.pinot.segment.spi.AggregationFunctionType;
 import org.apache.pinot.spi.data.FieldSpec.DataType;
 
 
-public class PercentileEstAggregationFunction extends BaseSingleInputAggregationFunction<QuantileDigest, Long> {
+public class PercentileEstAggregationFunction extends NullableSingleInputAggregationFunction<QuantileDigest, Long> {
   public static final double DEFAULT_MAX_ERROR = 0.05;
 
   //version 0 functions specified in the of form PERCENTILEEST<2-digits>(column)
@@ -40,14 +43,15 @@ public class PercentileEstAggregationFunction extends BaseSingleInputAggregation
   protected final int _version;
   protected final double _percentile;
 
-  public PercentileEstAggregationFunction(ExpressionContext expression, int percentile) {
-    super(expression);
+  public PercentileEstAggregationFunction(ExpressionContext expression, int percentile, boolean nullHandlingEnabled) {
+    super(expression, nullHandlingEnabled);
     _version = 0;
     _percentile = percentile;
   }
 
-  public PercentileEstAggregationFunction(ExpressionContext expression, double percentile) {
-    super(expression);
+  public PercentileEstAggregationFunction(ExpressionContext expression, double percentile,
+      boolean nullHandlingEnabled) {
+    super(expression, nullHandlingEnabled);
     _version = 1;
     _percentile = percentile;
   }
@@ -78,27 +82,15 @@ public class PercentileEstAggregationFunction extends BaseSingleInputAggregation
   public void aggregate(int length, AggregationResultHolder aggregationResultHolder,
       Map<ExpressionContext, BlockValSet> blockValSetMap) {
     BlockValSet blockValSet = blockValSetMap.get(_expression);
+    QuantileDigest quantileDigest = getDefaultQuantileDigest(aggregationResultHolder);
     if (blockValSet.getValueType() != DataType.BYTES) {
-      long[] longValues = blockValSet.getLongValuesSV();
-      QuantileDigest quantileDigest = getDefaultQuantileDigest(aggregationResultHolder);
-      for (int i = 0; i < length; i++) {
-        quantileDigest.add(longValues[i]);
-      }
+      forEachNotNullLong(length, blockValSet, value -> quantileDigest.add(value));
     } else {
       // Serialized QuantileDigest
       byte[][] bytesValues = blockValSet.getBytesValuesSV();
-      QuantileDigest quantileDigest = aggregationResultHolder.getResult();
-      if (quantileDigest != null) {
-        for (int i = 0; i < length; i++) {
-          quantileDigest.merge(ObjectSerDeUtils.QUANTILE_DIGEST_SER_DE.deserialize(bytesValues[i]));
-        }
-      } else {
-        quantileDigest = ObjectSerDeUtils.QUANTILE_DIGEST_SER_DE.deserialize(bytesValues[0]);
-        aggregationResultHolder.setValue(quantileDigest);
-        for (int i = 1; i < length; i++) {
-          quantileDigest.merge(ObjectSerDeUtils.QUANTILE_DIGEST_SER_DE.deserialize(bytesValues[i]));
-        }
-      }
+      forEachNotNullBytes(length, blockValSet, value -> {
+        quantileDigest.merge(ObjectSerDeUtils.QUANTILE_DIGEST_SER_DE.deserialize(value));
+      });
     }
   }
 
@@ -107,23 +99,20 @@ public class PercentileEstAggregationFunction extends BaseSingleInputAggregation
       Map<ExpressionContext, BlockValSet> blockValSetMap) {
     BlockValSet blockValSet = blockValSetMap.get(_expression);
     if (blockValSet.getValueType() != DataType.BYTES) {
-      long[] longValues = blockValSet.getLongValuesSV();
-      for (int i = 0; i < length; i++) {
-        getDefaultQuantileDigest(groupByResultHolder, groupKeyArray[i]).add(longValues[i]);
-      }
+      forEachNotNullLong(length, blockValSet,
+          (i, value) -> getDefaultQuantileDigest(groupByResultHolder, groupKeyArray[i]).add(value));
     } else {
       // Serialized QuantileDigest
-      byte[][] bytesValues = blockValSet.getBytesValuesSV();
-      for (int i = 0; i < length; i++) {
-        QuantileDigest value = ObjectSerDeUtils.QUANTILE_DIGEST_SER_DE.deserialize(bytesValues[i]);
+      forEachNotNullBytes(length, blockValSet, (i, value) -> {
+        QuantileDigest digest = ObjectSerDeUtils.QUANTILE_DIGEST_SER_DE.deserialize(value);
         int groupKey = groupKeyArray[i];
         QuantileDigest quantileDigest = groupByResultHolder.getResult(groupKey);
         if (quantileDigest != null) {
-          quantileDigest.merge(value);
+          quantileDigest.merge(digest);
         } else {
-          groupByResultHolder.setValueForKey(groupKey, value);
+          groupByResultHolder.setValueForKey(groupKey, digest);
         }
-      }
+      });
     }
   }
 
@@ -132,29 +121,26 @@ public class PercentileEstAggregationFunction extends BaseSingleInputAggregation
       Map<ExpressionContext, BlockValSet> blockValSetMap) {
     BlockValSet blockValSet = blockValSetMap.get(_expression);
     if (blockValSet.getValueType() != DataType.BYTES) {
-      long[] longValues = blockValSet.getLongValuesSV();
-      for (int i = 0; i < length; i++) {
-        long value = longValues[i];
-        for (int groupKey : groupKeysArray[i]) {
+      forEachNotNullLong(length, blockValSet, (rowId, value) -> {
+        for (int groupKey : groupKeysArray[rowId]) {
           getDefaultQuantileDigest(groupByResultHolder, groupKey).add(value);
         }
-      }
+      });
     } else {
       // Serialized QuantileDigest
-      byte[][] bytesValues = blockValSet.getBytesValuesSV();
-      for (int i = 0; i < length; i++) {
-        QuantileDigest value = ObjectSerDeUtils.QUANTILE_DIGEST_SER_DE.deserialize(bytesValues[i]);
-        for (int groupKey : groupKeysArray[i]) {
+      forEachNotNullBytes(length, blockValSet, (rowId, bytes) -> {
+        QuantileDigest value = ObjectSerDeUtils.QUANTILE_DIGEST_SER_DE.deserialize(bytes);
+        for (int groupKey : groupKeysArray[rowId]) {
           QuantileDigest quantileDigest = groupByResultHolder.getResult(groupKey);
           if (quantileDigest != null) {
             quantileDigest.merge(value);
           } else {
             // Create a new QuantileDigest for the group
             groupByResultHolder
-                .setValueForKey(groupKey, ObjectSerDeUtils.QUANTILE_DIGEST_SER_DE.deserialize(bytesValues[i]));
+                .setValueForKey(groupKey, ObjectSerDeUtils.QUANTILE_DIGEST_SER_DE.deserialize(bytes));
           }
         }
-      }
+      });
     }
   }
 
@@ -212,12 +198,7 @@ public class PercentileEstAggregationFunction extends BaseSingleInputAggregation
    * @return QuantileDigest from the result holder
    */
   protected static QuantileDigest getDefaultQuantileDigest(AggregationResultHolder aggregationResultHolder) {
-    QuantileDigest quantileDigest = aggregationResultHolder.getResult();
-    if (quantileDigest == null) {
-      quantileDigest = new QuantileDigest(DEFAULT_MAX_ERROR);
-      aggregationResultHolder.setValue(quantileDigest);
-    }
-    return quantileDigest;
+    return getValue(aggregationResultHolder, () -> new QuantileDigest(DEFAULT_MAX_ERROR));
   }
 
   /**
@@ -228,11 +209,7 @@ public class PercentileEstAggregationFunction extends BaseSingleInputAggregation
    * @return QuantileDigest for the group key
    */
   protected static QuantileDigest getDefaultQuantileDigest(GroupByResultHolder groupByResultHolder, int groupKey) {
-    QuantileDigest quantileDigest = groupByResultHolder.getResult(groupKey);
-    if (quantileDigest == null) {
-      quantileDigest = new QuantileDigest(DEFAULT_MAX_ERROR);
-      groupByResultHolder.setValueForKey(groupKey, quantileDigest);
-    }
-    return quantileDigest;
+    Supplier<QuantileDigest> orCreate = () -> new QuantileDigest(DEFAULT_MAX_ERROR);
+    return getValue(groupByResultHolder, groupKey, orCreate);
   }
 }

@@ -60,12 +60,12 @@ import org.roaringbitmap.RoaringBitmap;
  * Example of second argument: 'threshold=10;log2m=8'
  */
 @SuppressWarnings({"rawtypes", "unchecked"})
-public class DistinctCountSmartHLLAggregationFunction extends BaseSingleInputAggregationFunction<Object, Integer> {
+public class DistinctCountSmartHLLAggregationFunction extends NullableSingleInputAggregationFunction<Object, Integer> {
   private final int _threshold;
   private final int _log2m;
 
-  public DistinctCountSmartHLLAggregationFunction(List<ExpressionContext> arguments) {
-    super(arguments.get(0));
+  public DistinctCountSmartHLLAggregationFunction(List<ExpressionContext> arguments, boolean nullHandlingEnabled) {
+    super(arguments.get(0), nullHandlingEnabled);
 
     if (arguments.size() > 1) {
       Parameters parameters = new Parameters(arguments.get(1).getLiteral().getStringValue());
@@ -110,8 +110,12 @@ public class DistinctCountSmartHLLAggregationFunction extends BaseSingleInputAgg
     if (dictionary != null) {
       RoaringBitmap dictIdBitmap = getDictIdBitmap(aggregationResultHolder, dictionary);
       if (blockValSet.isSingleValue()) {
-        int[] dictIds = blockValSet.getDictionaryIdsSV();
-        dictIdBitmap.addN(dictIds, 0, length);
+        if (_nullHandlingEnabled) {
+          forEachNotNullDictId(length, blockValSet, did -> dictIdBitmap.add(did));
+        } else {
+          int[] dictIds = blockValSet.getDictionaryIdsSV();
+          dictIdBitmap.addN(dictIds, 0, length);
+        }
       } else {
         int[][] dictIds = blockValSet.getDictionaryIdsMV();
         for (int i = 0; i < length; i++) {
@@ -136,40 +140,22 @@ public class DistinctCountSmartHLLAggregationFunction extends BaseSingleInputAgg
     if (blockValSet.isSingleValue()) {
       switch (storedType) {
         case INT:
-          int[] intValues = blockValSet.getIntValuesSV();
-          for (int i = 0; i < length; i++) {
-            hll.offer(intValues[i]);
-          }
+          forEachNotNullInt(length, blockValSet, hll::offer);
           break;
         case LONG:
-          long[] longValues = blockValSet.getLongValuesSV();
-          for (int i = 0; i < length; i++) {
-            hll.offer(longValues[i]);
-          }
+          forEachNotNullLong(length, blockValSet, hll::offer);
           break;
         case FLOAT:
-          float[] floatValues = blockValSet.getFloatValuesSV();
-          for (int i = 0; i < length; i++) {
-            hll.offer(floatValues[i]);
-          }
+          forEachNotNullFloat(length, blockValSet, hll::offer);
           break;
         case DOUBLE:
-          double[] doubleValues = blockValSet.getDoubleValuesSV();
-          for (int i = 0; i < length; i++) {
-            hll.offer(doubleValues[i]);
-          }
+          forEachNotNullDouble(length, blockValSet, hll::offer);
           break;
         case STRING:
-          String[] stringValues = blockValSet.getStringValuesSV();
-          for (int i = 0; i < length; i++) {
-            hll.offer(stringValues[i]);
-          }
+          forEachNotNullString(length, blockValSet, hll::offer);
           break;
         case BYTES:
-          byte[][] bytesValues = blockValSet.getBytesValuesSV();
-          for (int i = 0; i < length; i++) {
-            hll.offer(bytesValues[i]);
-          }
+          forEachNotNullBytes(length, blockValSet, hll::offer);
           break;
         default:
           throw getIllegalDataTypeException(valueType, true);
@@ -230,46 +216,27 @@ public class DistinctCountSmartHLLAggregationFunction extends BaseSingleInputAgg
       switch (storedType) {
         case INT:
           IntOpenHashSet intSet = (IntOpenHashSet) valueSet;
-          int[] intValues = blockValSet.getIntValuesSV();
-          for (int i = 0; i < length; i++) {
-            intSet.add(intValues[i]);
-          }
+          forEachNotNullInt(length, blockValSet, intSet::add);
           break;
         case LONG:
           LongOpenHashSet longSet = (LongOpenHashSet) valueSet;
-          long[] longValues = blockValSet.getLongValuesSV();
-          for (int i = 0; i < length; i++) {
-            longSet.add(longValues[i]);
-          }
+          forEachNotNullLong(length, blockValSet, longSet::add);
           break;
         case FLOAT:
           FloatOpenHashSet floatSet = (FloatOpenHashSet) valueSet;
-          float[] floatValues = blockValSet.getFloatValuesSV();
-          for (int i = 0; i < length; i++) {
-            floatSet.add(floatValues[i]);
-          }
+          forEachNotNullFloat(length, blockValSet, floatSet::add);
           break;
         case DOUBLE:
           DoubleOpenHashSet doubleSet = (DoubleOpenHashSet) valueSet;
-          double[] doubleValues = blockValSet.getDoubleValuesSV();
-          for (int i = 0; i < length; i++) {
-            doubleSet.add(doubleValues[i]);
-          }
+          forEachNotNullDouble(length, blockValSet, doubleSet::add);
           break;
         case STRING:
           ObjectOpenHashSet<String> stringSet = (ObjectOpenHashSet<String>) valueSet;
-          String[] stringValues = blockValSet.getStringValuesSV();
-          //noinspection ManualArrayToCollectionCopy
-          for (int i = 0; i < length; i++) {
-            stringSet.add(stringValues[i]);
-          }
+          forEachNotNullString(length, blockValSet, stringSet::add);
           break;
         case BYTES:
           ObjectOpenHashSet<ByteArray> bytesSet = (ObjectOpenHashSet<ByteArray>) valueSet;
-          byte[][] bytesValues = blockValSet.getBytesValuesSV();
-          for (int i = 0; i < length; i++) {
-            bytesSet.add(new ByteArray(bytesValues[i]));
-          }
+          forEachNotNullBytes(length, blockValSet, value -> bytesSet.add(new ByteArray(value)));
           break;
         default:
           throw getIllegalDataTypeException(valueType, true);
@@ -367,9 +334,15 @@ public class DistinctCountSmartHLLAggregationFunction extends BaseSingleInputAgg
     Dictionary dictionary = blockValSet.getDictionary();
     if (dictionary != null) {
       if (blockValSet.isSingleValue()) {
-        int[] dictIds = blockValSet.getDictionaryIdsSV();
-        for (int i = 0; i < length; i++) {
-          getDictIdBitmap(groupByResultHolder, groupKeyArray[i], dictionary).add(dictIds[i]);
+        if (_nullHandlingEnabled) {
+          forEachNotNullDictId(length, blockValSet, (i, value) -> {
+            getDictIdBitmap(groupByResultHolder, groupKeyArray[i], dictionary).add(value);
+          });
+        } else {
+          int[] dictIds = blockValSet.getDictionaryIdsSV();
+          for (int i = 0; i < length; i++) {
+            getDictIdBitmap(groupByResultHolder, groupKeyArray[i], dictionary).add(dictIds[i]);
+          }
         }
       } else {
         int[][] dictIds = blockValSet.getDictionaryIdsMV();
@@ -386,43 +359,34 @@ public class DistinctCountSmartHLLAggregationFunction extends BaseSingleInputAgg
     if (blockValSet.isSingleValue()) {
       switch (storedType) {
         case INT:
-          int[] intValues = blockValSet.getIntValuesSV();
-          for (int i = 0; i < length; i++) {
-            ((IntOpenHashSet) getValueSet(groupByResultHolder, groupKeyArray[i], DataType.INT)).add(intValues[i]);
-          }
+          forEachNotNullInt(length, blockValSet,
+              (i, value) -> ((IntOpenHashSet) getValueSet(groupByResultHolder, groupKeyArray[i], DataType.INT))
+                  .add(value));
           break;
         case LONG:
-          long[] longValues = blockValSet.getLongValuesSV();
-          for (int i = 0; i < length; i++) {
-            ((LongOpenHashSet) getValueSet(groupByResultHolder, groupKeyArray[i], DataType.LONG)).add(longValues[i]);
-          }
+          forEachNotNullLong(length, blockValSet,
+              (i, value) -> ((LongOpenHashSet) getValueSet(groupByResultHolder, groupKeyArray[i], DataType.LONG))
+                  .add(value));
           break;
         case FLOAT:
-          float[] floatValues = blockValSet.getFloatValuesSV();
-          for (int i = 0; i < length; i++) {
-            ((FloatOpenHashSet) getValueSet(groupByResultHolder, groupKeyArray[i], DataType.FLOAT)).add(floatValues[i]);
-          }
+          forEachNotNullFloat(length, blockValSet,
+              (i, value) -> ((FloatOpenHashSet) getValueSet(groupByResultHolder, groupKeyArray[i], DataType.FLOAT))
+                  .add(value));
           break;
         case DOUBLE:
-          double[] doubleValues = blockValSet.getDoubleValuesSV();
-          for (int i = 0; i < length; i++) {
-            ((DoubleOpenHashSet) getValueSet(groupByResultHolder, groupKeyArray[i], DataType.DOUBLE)).add(
-                doubleValues[i]);
-          }
+          forEachNotNullDouble(length, blockValSet,
+              (i, value) -> ((DoubleOpenHashSet) getValueSet(groupByResultHolder, groupKeyArray[i], DataType.DOUBLE))
+                  .add(value));
           break;
         case STRING:
-          String[] stringValues = blockValSet.getStringValuesSV();
-          for (int i = 0; i < length; i++) {
-            ((ObjectOpenHashSet<String>) getValueSet(groupByResultHolder, groupKeyArray[i], DataType.STRING)).add(
-                stringValues[i]);
-          }
+          forEachNotNullString(length, blockValSet,
+              (i, value) -> ((Set<String>) getValueSet(groupByResultHolder, groupKeyArray[i], DataType.STRING))
+                  .add(value));
           break;
         case BYTES:
-          byte[][] bytesValues = blockValSet.getBytesValuesSV();
-          for (int i = 0; i < length; i++) {
-            ((ObjectOpenHashSet<ByteArray>) getValueSet(groupByResultHolder, groupKeyArray[i], DataType.BYTES)).add(
-                new ByteArray(bytesValues[i]));
-          }
+          forEachNotNullBytes(length, blockValSet,
+              (i, value) -> ((Set<ByteArray>) getValueSet(groupByResultHolder, groupKeyArray[i], DataType.BYTES))
+                  .add(new ByteArray(value)));
           break;
         default:
           throw getIllegalDataTypeException(valueType, true);

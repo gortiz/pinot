@@ -40,6 +40,15 @@ public class MinMaxRangePair implements Comparable<MinMaxRangePair> {
     }
   }
 
+  public void apply(double value) {
+    if (value < _min) {
+      _min = value;
+    }
+    if (value > _max) {
+      _max = value;
+    }
+  }
+
   public void apply(@Nonnull MinMaxRangePair minMaxRangePair) {
     if (minMaxRangePair._min < _min) {
       _min = minMaxRangePair._min;

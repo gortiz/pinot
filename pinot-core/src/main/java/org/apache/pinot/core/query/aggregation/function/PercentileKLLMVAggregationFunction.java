@@ -32,30 +32,8 @@ import org.apache.pinot.spi.data.FieldSpec.DataType;
 public class PercentileKLLMVAggregationFunction extends PercentileKLLAggregationFunction {
 
   public PercentileKLLMVAggregationFunction(List<ExpressionContext> arguments) {
-    super(arguments);
-  }
-
-  @Override
-  public void aggregate(int length, AggregationResultHolder aggregationResultHolder,
-      Map<ExpressionContext, BlockValSet> blockValSetMap) {
-    BlockValSet valueSet = blockValSetMap.get(_expression);
-    DataType valueType = valueSet.getValueType();
-    KllDoublesSketch sketch = getOrCreateSketch(aggregationResultHolder);
-
-    if (valueType == DataType.BYTES) {
-      // Assuming the column contains serialized data sketches
-      KllDoublesSketch[] deserializedSketches = deserializeSketches(blockValSetMap.get(_expression).getBytesValuesSV());
-      for (int i = 0; i < length; i++) {
-        sketch.merge(deserializedSketches[i]);
-      }
-    } else {
-      double[][] values = valueSet.getDoubleValuesMV();
-      for (int i = 0; i < length; i++) {
-        for (double val : values[i]) {
-          sketch.update(val);
-        }
-      }
-    }
+    // TODO: Support null on MV aggregations
+    super(arguments, false);
   }
 
   @Override

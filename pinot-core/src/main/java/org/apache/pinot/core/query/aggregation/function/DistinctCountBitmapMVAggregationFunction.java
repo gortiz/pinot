@@ -38,7 +38,7 @@ import org.roaringbitmap.RoaringBitmap;
 public class DistinctCountBitmapMVAggregationFunction extends DistinctCountBitmapAggregationFunction {
 
   public DistinctCountBitmapMVAggregationFunction(List<ExpressionContext> arguments) {
-    super(verifySingleArgument(arguments, "DISTINCT_COUNT_BITMAP_MV"));
+    super(verifySingleArgument(arguments, "DISTINCT_COUNT_BITMAP_MV"), false);
   }
 
   @Override

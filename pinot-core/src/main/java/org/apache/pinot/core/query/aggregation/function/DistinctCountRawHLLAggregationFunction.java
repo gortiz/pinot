@@ -34,8 +34,8 @@ public class DistinctCountRawHLLAggregationFunction
     extends BaseSingleInputAggregationFunction<HyperLogLog, SerializedHLL> {
   private final DistinctCountHLLAggregationFunction _distinctCountHLLAggregationFunction;
 
-  public DistinctCountRawHLLAggregationFunction(List<ExpressionContext> arguments) {
-    this(arguments.get(0), new DistinctCountHLLAggregationFunction(arguments));
+  public DistinctCountRawHLLAggregationFunction(List<ExpressionContext> arguments, boolean nullHandlingEnabled) {
+    this(arguments.get(0), new DistinctCountHLLAggregationFunction(arguments, nullHandlingEnabled));
   }
 
   DistinctCountRawHLLAggregationFunction(ExpressionContext expression,

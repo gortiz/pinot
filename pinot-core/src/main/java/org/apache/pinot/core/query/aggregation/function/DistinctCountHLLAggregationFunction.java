@@ -38,11 +38,11 @@ import org.roaringbitmap.PeekableIntIterator;
 import org.roaringbitmap.RoaringBitmap;
 
 
-public class DistinctCountHLLAggregationFunction extends BaseSingleInputAggregationFunction<HyperLogLog, Long> {
+public class DistinctCountHLLAggregationFunction extends NullableSingleInputAggregationFunction<HyperLogLog, Long> {
   protected final int _log2m;
 
-  public DistinctCountHLLAggregationFunction(List<ExpressionContext> arguments) {
-    super(arguments.get(0));
+  public DistinctCountHLLAggregationFunction(List<ExpressionContext> arguments, boolean nullHandlingEnabled) {
+    super(arguments.get(0), nullHandlingEnabled);
     int numExpressions = arguments.size();
     // This function expects 1 or 2 arguments.
     Preconditions.checkArgument(numExpressions <= 2, "DistinctCountHLL expects 1 or 2 arguments, got: %s",
@@ -73,74 +73,94 @@ public class DistinctCountHLLAggregationFunction extends BaseSingleInputAggregat
     return new ObjectGroupByResultHolder(initialCapacity, maxCapacity);
   }
 
+  protected void onAggregationOnlyBytes(int length, BlockValSet valueSet, HyperLogLog hyperLogLog) {
+    forEachNotNullBytes(length, valueSet, (i, value) -> {
+      try {
+        hyperLogLog.addAll(ObjectSerDeUtils.HYPER_LOG_LOG_SER_DE.deserialize(value));
+      } catch (Exception e) {
+        throw new RuntimeException("Caught exception while merging HyperLogLogs", e);
+      }
+    });
+  }
+
+  protected void onAggregationOnlyInt(int length, BlockValSet blockValSet, HyperLogLog hyperLogLog) {
+    forEachNotNullInt(length, blockValSet, hyperLogLog::offer);
+  }
+
+  protected void onAggregationOnlyLong(int length, BlockValSet blockValSet, HyperLogLog hyperLogLog) {
+    forEachNotNullLong(length, blockValSet, hyperLogLog::offer);
+  }
+
+  protected void onAggregationOnlyFloat(int length, BlockValSet blockValSet, HyperLogLog hyperLogLog) {
+    forEachNotNullFloat(length, blockValSet, hyperLogLog::offer);
+  }
+
+  protected void onAggregationOnlyDouble(int length, BlockValSet blockValSet, HyperLogLog hyperLogLog) {
+    forEachNotNullDouble(length, blockValSet, hyperLogLog::offer);
+  }
+
+  protected void onAggregationOnlyString(int length, BlockValSet blockValSet, HyperLogLog hyperLogLog) {
+    forEachNotNullArray(length, blockValSet, BlockValSet::getStringValuesSV, value -> hyperLogLog.offer(hyperLogLog));
+  }
+
   @Override
   public void aggregate(int length, AggregationResultHolder aggregationResultHolder,
       Map<ExpressionContext, BlockValSet> blockValSetMap) {
     BlockValSet blockValSet = blockValSetMap.get(_expression);
 
+    HyperLogLog hyperLogLog = aggregationResultHolder.getResult();
+
     // Treat BYTES value as serialized HyperLogLog
     DataType storedType = blockValSet.getValueType().getStoredType();
     if (storedType == DataType.BYTES) {
-      byte[][] bytesValues = blockValSet.getBytesValuesSV();
-      try {
-        HyperLogLog hyperLogLog = aggregationResultHolder.getResult();
-        if (hyperLogLog != null) {
-          for (int i = 0; i < length; i++) {
-            hyperLogLog.addAll(ObjectSerDeUtils.HYPER_LOG_LOG_SER_DE.deserialize(bytesValues[i]));
-          }
+      if (hyperLogLog == null) {
+        if (_nullHandlingEnabled) {
+          hyperLogLog = getHyperLogLog(aggregationResultHolder);
         } else {
+          // Could we use the default here?
+          byte[][] bytesValues = blockValSet.getBytesValuesSV();
           hyperLogLog = ObjectSerDeUtils.HYPER_LOG_LOG_SER_DE.deserialize(bytesValues[0]);
-          aggregationResultHolder.setValue(hyperLogLog);
-          for (int i = 1; i < length; i++) {
-            hyperLogLog.addAll(ObjectSerDeUtils.HYPER_LOG_LOG_SER_DE.deserialize(bytesValues[i]));
-          }
         }
-      } catch (Exception e) {
-        throw new RuntimeException("Caught exception while merging HyperLogLogs", e);
+        aggregationResultHolder.setValue(hyperLogLog);
       }
+      onAggregationOnlyBytes(length, blockValSet, hyperLogLog);
       return;
     }
 
     // For dictionary-encoded expression, store dictionary ids into the bitmap
     Dictionary dictionary = blockValSet.getDictionary();
     if (dictionary != null) {
-      int[] dictIds = blockValSet.getDictionaryIdsSV();
-      getDictIdBitmap(aggregationResultHolder, dictionary).addN(dictIds, 0, length);
+      RoaringBitmap dictIdBitmap = getDictIdBitmap(aggregationResultHolder, dictionary);
+      if (_nullHandlingEnabled) {
+        forEachNotNullDictId(length, blockValSet, docId -> {
+          dictIdBitmap.add(docId);
+        });
+      } else {
+        int[] dictIds = blockValSet.getDictionaryIdsSV();
+        dictIdBitmap.addN(dictIds, 0, length);
+      }
       return;
     }
 
     // For non-dictionary-encoded expression, store values into the HyperLogLog
-    HyperLogLog hyperLogLog = getHyperLogLog(aggregationResultHolder);
+    if (hyperLogLog == null) {
+      hyperLogLog = getHyperLogLog(aggregationResultHolder);
+    }
     switch (storedType) {
       case INT:
-        int[] intValues = blockValSet.getIntValuesSV();
-        for (int i = 0; i < length; i++) {
-          hyperLogLog.offer(intValues[i]);
-        }
+        onAggregationOnlyInt(length, blockValSet, hyperLogLog);
         break;
       case LONG:
-        long[] longValues = blockValSet.getLongValuesSV();
-        for (int i = 0; i < length; i++) {
-          hyperLogLog.offer(longValues[i]);
-        }
+        onAggregationOnlyLong(length, blockValSet, hyperLogLog);
         break;
       case FLOAT:
-        float[] floatValues = blockValSet.getFloatValuesSV();
-        for (int i = 0; i < length; i++) {
-          hyperLogLog.offer(floatValues[i]);
-        }
+        onAggregationOnlyFloat(length, blockValSet, hyperLogLog);
         break;
       case DOUBLE:
-        double[] doubleValues = blockValSet.getDoubleValuesSV();
-        for (int i = 0; i < length; i++) {
-          hyperLogLog.offer(doubleValues[i]);
-        }
+        onAggregationOnlyDouble(length, blockValSet, hyperLogLog);
         break;
       case STRING:
-        String[] stringValues = blockValSet.getStringValuesSV();
-        for (int i = 0; i < length; i++) {
-          hyperLogLog.offer(stringValues[i]);
-        }
+        onAggregationOnlyString(length, blockValSet, hyperLogLog);
         break;
       default:
         throw new IllegalStateException("Illegal data type for DISTINCT_COUNT_HLL aggregation function: " + storedType);

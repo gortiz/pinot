@@ -34,7 +34,7 @@ import org.roaringbitmap.RoaringBitmap;
 public class DistinctCountHLLMVAggregationFunction extends DistinctCountHLLAggregationFunction {
 
   public DistinctCountHLLMVAggregationFunction(List<ExpressionContext> arguments) {
-    super(arguments);
+    super(arguments, false);
   }
 
   @Override
