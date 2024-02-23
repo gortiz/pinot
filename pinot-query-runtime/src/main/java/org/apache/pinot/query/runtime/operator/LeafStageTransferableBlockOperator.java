@@ -139,6 +139,8 @@ public class LeafStageTransferableBlockOperator extends MultiStageOperator {
     // All data blocks have been returned. Record the stats and return EOS.
     Map<String, String> executionStats = _executionStats;
     if (executionStats != null) {
+      executionStats.putIfAbsent("numServersQueried", "1");
+      executionStats.putIfAbsent("numServersResponded", "1");
       OperatorStats operatorStats = _opChainStats.getOperatorStats(_context, getOperatorId());
       operatorStats.recordExecutionStats(executionStats);
     }
@@ -249,14 +251,11 @@ public class LeafStageTransferableBlockOperator extends MultiStageOperator {
     for (Map.Entry<String, String> entry : stats2.entrySet()) {
       String k2 = entry.getKey();
       String v2 = entry.getValue();
-      stats1.compute(k2, (k1, v1) -> {
-        if (v1 == null) {
-          return v2;
-        }
+      stats1.merge(k2, v2, (val1, val2) -> {
         try {
-          return Long.toString(Long.parseLong(v1) + Long.parseLong(v2));
+          return Long.toString(Long.parseLong(val1) + Long.parseLong(val2));
         } catch (Exception e) {
-          return v1 + "\n" + v2;
+          return val1 + "\n" + val2;
         }
       });
     }

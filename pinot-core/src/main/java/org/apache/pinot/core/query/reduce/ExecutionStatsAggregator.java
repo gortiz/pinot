@@ -51,6 +51,8 @@ public class ExecutionStatsAggregator {
   private long _numDocsScanned = 0L;
   private long _numEntriesScannedInFilter = 0L;
   private long _numEntriesScannedPostFilter = 0L;
+  private int _numServersQueried = 0;
+  private int _numServersResponded = 0;
   private long _numSegmentsQueried = 0L;
   private long _numSegmentsProcessed = 0L;
   private long _numSegmentsMatched = 0L;
@@ -152,6 +154,16 @@ public class ExecutionStatsAggregator {
     if (numEntriesScannedPostFilterString != null) {
       _numEntriesScannedPostFilter += Long.parseLong(numEntriesScannedPostFilterString);
     }
+
+    String numServersQueried = metadata.get("numServersQueried");
+    if (numServersQueried != null) {
+      _numServersQueried += Integer.parseInt(numServersQueried);
+    }
+    String numServersResponded = metadata.get("numServersResponded");
+    if (numServersResponded != null) {
+      _numServersResponded += Integer.parseInt(numServersResponded);
+    }
+
     String numSegmentsQueriedString = metadata.get(DataTable.MetadataKey.NUM_SEGMENTS_QUERIED.getName());
     if (numSegmentsQueriedString != null) {
       _numSegmentsQueried += Long.parseLong(numSegmentsQueriedString);
@@ -304,6 +316,8 @@ public class ExecutionStatsAggregator {
     brokerResponseNative.setNumDocsScanned(_numDocsScanned);
     brokerResponseNative.setNumEntriesScannedInFilter(_numEntriesScannedInFilter);
     brokerResponseNative.setNumEntriesScannedPostFilter(_numEntriesScannedPostFilter);
+    brokerResponseNative.setNumServersQueried(_numServersQueried);
+    brokerResponseNative.setNumServersResponded(_numServersResponded);
     brokerResponseNative.setNumSegmentsQueried(_numSegmentsQueried);
     brokerResponseNative.setNumSegmentsProcessed(_numSegmentsProcessed);
     brokerResponseNative.setNumSegmentsMatched(_numSegmentsMatched);
