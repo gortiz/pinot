@@ -25,7 +25,7 @@ import java.util.Set;
 import org.apache.pinot.segment.spi.ColumnMetadata;
 import org.apache.pinot.segment.spi.creator.IndexCreatorProvider;
 import org.apache.pinot.segment.spi.index.IndexHandler;
-import org.apache.pinot.segment.spi.store.ColumnIndexType;
+import org.apache.pinot.segment.spi.index.StandardIndexes;
 import org.apache.pinot.segment.spi.store.SegmentDirectory;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -58,14 +58,14 @@ public abstract class BaseIndexHandler implements IndexHandler {
     // IndexHandlers have updated their indexes as some of them need to temporarily create a forward index to
     // generate other indexes off of.
     for (String column : _tmpForwardIndexColumns) {
-      segmentWriter.removeIndex(column, ColumnIndexType.FORWARD_INDEX);
+      segmentWriter.removeIndex(column, StandardIndexes.forward());
     }
   }
 
   protected ColumnMetadata createForwardIndexIfNeeded(SegmentDirectory.Writer segmentWriter,
       String columnName, IndexCreatorProvider indexCreatorProvider, boolean isTemporaryForwardIndex)
       throws IOException {
-    if (segmentWriter.hasIndexFor(columnName, ColumnIndexType.FORWARD_INDEX)) {
+    if (segmentWriter.hasIndexFor(columnName, StandardIndexes.forward())) {
       LOGGER.info("Forward index already exists for column: {}, skip trying to create it", columnName);
       return _segmentDirectory.getSegmentMetadata().getColumnMetadataFor(columnName);
     }
@@ -73,11 +73,11 @@ public abstract class BaseIndexHandler implements IndexHandler {
     // If forward index is disabled it means that it has to be dictionary based and the inverted index must exist to
     // regenerate it. If either are missing the only way to get the forward index back and potentially use it to
     // generate newly added indexes is to refresh or back-fill the forward index.
-    Preconditions.checkState(segmentWriter.hasIndexFor(columnName, ColumnIndexType.DICTIONARY),
+    Preconditions.checkState(segmentWriter.hasIndexFor(columnName, StandardIndexes.dictionary()),
         String.format("Forward index disabled column %s must have a dictionary to regenerate the forward index. "
             + "Regeneration of the forward index is required to create new indexes as well. Please refresh or "
             + "back-fill the forward index", columnName));
-    Preconditions.checkState(segmentWriter.hasIndexFor(columnName, ColumnIndexType.INVERTED_INDEX),
+    Preconditions.checkState(segmentWriter.hasIndexFor(columnName, StandardIndexes.inverted()),
         String.format("Forward index disabled column %s must have an inverted index to regenerate the forward index. "
             + "Regeneration of the forward index is required to create new indexes as well. Please refresh or "
             + "back-fill the forward index", columnName));
@@ -89,7 +89,7 @@ public abstract class BaseIndexHandler implements IndexHandler {
     invertedIndexAndDictionaryBasedForwardIndexCreator.regenerateForwardIndex();
 
     // Validate that the forward index is created.
-    if (!segmentWriter.hasIndexFor(columnName, ColumnIndexType.FORWARD_INDEX)) {
+    if (!segmentWriter.hasIndexFor(columnName, StandardIndexes.forward())) {
       throw new IOException(String.format("Forward index was not created for column: %s, is temporary: %s", columnName,
           isTemporaryForwardIndex ? "true" : "false"));
     }
