@@ -1444,8 +1444,10 @@
       <!-- Required by Calcite -->
       <dependency>
         <groupId>org.immutables</groupId>
-        <artifactId>value-annotations</artifactId>
-        <version>${immutables.version}</version>
+        <artifactId>bom</artifactId>
+        <version>2.10.1</version>
+        <scope>import</scope>
+        <type>pom</type>
       </dependency>
 
       <dependency>
