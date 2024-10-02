@@ -58,9 +58,98 @@ public interface PlanNodeVisitor<T, C> {
 
   T visitWindow(WindowNode node, C context);
 
-  T visitSetOp(SetOpNode setOpNode, C context);
+  T visitSetOp(SetOpNode node, C context);
 
-  T visitExchange(ExchangeNode exchangeNode, C context);
+  T visitExchange(ExchangeNode node, C context);
 
   T visitExplained(ExplainedNode node, C context);
+
+  abstract class DepthFirstVisitor<T, C> implements PlanNodeVisitor<T, C> {
+
+    protected void visitChildren(PlanNode node, C context) {
+      for (PlanNode input : node.getInputs()) {
+        input.visit(this, context);
+      }
+    }
+
+    protected abstract T defaultCase(PlanNode node, C context);
+
+    @Override
+    public T visitAggregate(AggregateNode node, C context) {
+      visitChildren(node, context);
+      return defaultCase(node, context);
+    }
+
+    @Override
+    public T visitFilter(FilterNode node, C context) {
+      visitChildren(node, context);
+      return defaultCase(node, context);
+    }
+
+    @Override
+    public T visitJoin(JoinNode node, C context) {
+      visitChildren(node, context);
+      return defaultCase(node, context);
+    }
+
+    @Override
+    public T visitMailboxReceive(MailboxReceiveNode node, C context) {
+      visitChildren(node, context);
+      return defaultCase(node, context);
+    }
+
+    @Override
+    public T visitMailboxSend(MailboxSendNode node, C context) {
+      visitChildren(node, context);
+      return defaultCase(node, context);
+    }
+
+    @Override
+    public T visitProject(ProjectNode node, C context) {
+      visitChildren(node, context);
+      return defaultCase(node, context);
+    }
+
+    @Override
+    public T visitSort(SortNode node, C context) {
+      visitChildren(node, context);
+      return defaultCase(node, context);
+    }
+
+    @Override
+    public T visitTableScan(TableScanNode node, C context) {
+      visitChildren(node, context);
+      return defaultCase(node, context);
+    }
+
+    @Override
+    public T visitValue(ValueNode node, C context) {
+      visitChildren(node, context);
+      return defaultCase(node, context);
+    }
+
+    @Override
+    public T visitWindow(WindowNode node, C context) {
+      visitChildren(node, context);
+      return defaultCase(node, context);
+    }
+
+    @Override
+    public T visitSetOp(SetOpNode node, C context) {
+      visitChildren(node, context);
+      return defaultCase(node, context);
+    }
+
+    @Override
+    public T visitExchange(ExchangeNode node, C context) {
+      visitChildren(node, context);
+      return defaultCase(node, context);
+    }
+
+    @Override
+    public T visitExplained(ExplainedNode node, C context) {
+      visitChildren(node, context);
+      return defaultCase(node, context);
+    }
+  }
 }

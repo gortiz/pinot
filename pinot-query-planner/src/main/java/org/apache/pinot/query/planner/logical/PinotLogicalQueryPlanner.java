@@ -29,6 +29,7 @@ import java.util.Collections;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import javax.annotation.Nullable;
 import org.apache.calcite.rel.RelDistribution;
 import org.apache.calcite.rel.RelNode;
@@ -90,9 +91,19 @@ public class PinotLogicalQueryPlanner {
 
   private static PlanFragment planNodeToPlanFragment(
       PlanNode node, @Nullable TransformationTracker.Builder<PlanNode, RelNode> tracker) {
+    return planNodeToPlanFragment(node, tracker, false);
+  }
+
+  private static PlanFragment planNodeToPlanFragment(
+      PlanNode node, @Nullable TransformationTracker.Builder<PlanNode, RelNode> tracker, boolean reuseStages) {
     PlanFragmenter fragmenter = new PlanFragmenter();
     PlanFragmenter.Context fragmenterContext = fragmenter.createContext();
     node = node.visit(fragmenter, fragmenterContext);
+
+    if (reuseStages) {
+      node = reusingStages(node);
+    }
+
     Int2ObjectOpenHashMap<PlanFragment> planFragmentMap = fragmenter.getPlanFragmentMap();
     Int2ObjectOpenHashMap<IntList> childPlanFragmentIdsMap = fragmenter.getChildPlanFragmentIdsMap();
 
@@ -112,29 +123,42 @@ public class PinotLogicalQueryPlanner {
         childPlanFragments.add(planFragmentMap.get(childPlanFragmentIdIterator.nextInt()));
       }
     }
-    MailboxReceiveNode rootReceiveNode = new MailboxReceiveNode(0, node.getDataSchema(), List.of(), node.getStageId(),
+    MailboxReceiveNode rootReceiveNode = new MailboxReceiveNode(0, node.getDataSchema(), node.getStageId(),
         PinotRelExchangeType.getDefaultExchangeType(), RelDistribution.Type.BROADCAST_DISTRIBUTED, null, null, false,
         false, subPlanRootSenderNode);
 
     if (tracker != null) {
-      RelNode rootRelNode = tracker.getCreatorOf(node);
-      Preconditions.checkState(rootRelNode != null, "Root RelNode not found for PlanNode: %s", node);
-      tracker.trackCreation(rootRelNode, subPlanRootSenderNode);
-      Iterator<Map.Entry<? extends BasePlanNode, ExchangeNode>> it = Iterators.concat(
-          fragmenter.getMailboxSendToExchangeNodeMap().entrySet().iterator(),
-          fragmenter.getMailboxReceiveToExchangeNodeMap().entrySet().iterator()
-      );
-      while (it.hasNext()) {
-        Map.Entry<? extends BasePlanNode, ExchangeNode> entry = it.next();
-        ExchangeNode exchangeNode = entry.getValue();
-        RelNode originalNode = tracker.getCreatorOf(exchangeNode);
-        if (originalNode == null) {
-          throw new IllegalStateException("Original node not found for exchange node: " + exchangeNode);
-        }
-        tracker.trackCreation(originalNode, entry.getKey());
-      }
+      trackCreation(node, tracker, fragmenter, subPlanRootSenderNode);
     }
 
     return new PlanFragment(0, rootReceiveNode, Collections.singletonList(planFragment1));
+  }
+
+  private static void trackCreation(PlanNode node, TransformationTracker.Builder<PlanNode, RelNode> tracker,
+      PlanFragmenter fragmenter, MailboxSendNode subPlanRootSenderNode) {
+    RelNode rootRelNode = tracker.getCreatorOf(node);
+    Preconditions.checkState(rootRelNode != null, "Root RelNode not found for PlanNode: %s", node);
+    tracker.trackCreation(rootRelNode, subPlanRootSenderNode);
+    Iterator<Map.Entry<? extends BasePlanNode, ExchangeNode>> it = Iterators.concat(
+        fragmenter.getMailboxSendToExchangeNodeMap().entrySet().iterator(),
+        fragmenter.getMailboxReceiveToExchangeNodeMap().entrySet().iterator()
+    );
+    while (it.hasNext()) {
+      Map.Entry<? extends BasePlanNode, ExchangeNode> entry = it.next();
+      ExchangeNode exchangeNode = entry.getValue();
+      RelNode originalNode = tracker.getCreatorOf(exchangeNode);
+      if (originalNode == null) {
+        throw new IllegalStateException("Original node not found for exchange node: " + exchangeNode);
+      }
+      tracker.trackCreation(originalNode, entry.getKey());
+    }
+  }
+
+  private static PlanNode reusingStages(PlanNode node) {
+    Set<EquivalentStagesFinder.EquivalentStages> equivalentStages = EquivalentStagesFinder.findEquivalentStages(node);
+    if (equivalentStages.isEmpty()) {
+      return node;
+    }
+    return node;
   }
 }
