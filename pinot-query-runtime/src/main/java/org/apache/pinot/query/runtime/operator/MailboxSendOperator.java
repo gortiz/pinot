@@ -79,7 +79,7 @@ public class MailboxSendOperator extends MultiStageOperator {
     _exchange = exchangeFactory.apply(_statMap);
   }
 
-  private static BlockExchange getBlockExchange(OpChainExecutionContext context, int receiverStageId,
+  public static BlockExchange getBlockExchange(OpChainExecutionContext context, int receiverStageId,
       RelDistribution.Type distributionType, List<Integer> keys, StatMap<StatKey> statMap) {
     Preconditions.checkState(SUPPORTED_EXCHANGE_TYPES.contains(distributionType), "Unsupported distribution type: %s",
         distributionType);
@@ -189,7 +189,7 @@ public class MailboxSendOperator extends MultiStageOperator {
     _exchange.cancel(t);
   }
 
-  private void updateMetrics(TransferableBlock block) {
+  public static void updateMetrics(TransferableBlock block) {
     ServerMetrics serverMetrics = ServerMetrics.get();
     MultiStageQueryStats queryStats = block.getQueryStats();
     if (queryStats == null) {

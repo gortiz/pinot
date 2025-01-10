@@ -160,7 +160,7 @@ public class HashJoinOperator extends MultiStageOperator {
     return LOGGER;
   }
 
-  private int getMaxRowsInJoin(Map<String, String> opChainMetadata, @Nullable PlanNode.NodeHint nodeHint) {
+  public static int getMaxRowsInJoin(Map<String, String> opChainMetadata, @Nullable PlanNode.NodeHint nodeHint) {
     if (nodeHint != null) {
       Map<String, String> joinOptions = nodeHint.getHintOptions().get(PinotHintOptions.JOIN_HINT_OPTIONS);
       if (joinOptions != null) {
@@ -174,7 +174,7 @@ public class HashJoinOperator extends MultiStageOperator {
     return maxRowsInJoin != null ? maxRowsInJoin : DEFAULT_MAX_ROWS_IN_JOIN;
   }
 
-  private JoinOverFlowMode getJoinOverflowMode(Map<String, String> contextMetadata,
+  public static JoinOverFlowMode getJoinOverflowMode(Map<String, String> contextMetadata,
       @Nullable PlanNode.NodeHint nodeHint) {
     if (nodeHint != null) {
       Map<String, String> joinOptions = nodeHint.getHintOptions().get(PinotHintOptions.JOIN_HINT_OPTIONS);

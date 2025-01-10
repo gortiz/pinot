@@ -27,6 +27,7 @@ import org.apache.pinot.core.common.BlockValSet;
 import org.apache.pinot.core.query.aggregation.AggregationResultHolder;
 import org.apache.pinot.core.query.aggregation.function.AggregationFunction;
 import org.apache.pinot.query.planner.plannode.AggregateNode.AggType;
+import org.apache.pinot.query.runtime.blocks.DataMseBlock;
 import org.apache.pinot.query.runtime.blocks.TransferableBlock;
 import org.apache.pinot.query.runtime.operator.utils.TypeUtils;
 import org.roaringbitmap.RoaringBitmap;
@@ -77,6 +78,10 @@ public class MultistageAggregationExecutor {
     } else {
       processMerge(block);
     }
+  }
+
+  public void processBlock(DataMseBlock block) {
+
   }
 
   /**

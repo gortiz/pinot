@@ -137,7 +137,7 @@ public abstract class BaseMailboxReceiveOperator extends MultiStageOperator {
     _statMap.merge(StatKey.UPSTREAM_WAIT_MS, from.getLong(ReceivingMailbox.StatKey.WAIT_CPU_TIME_MS));
   }
 
-  private static class ReadMailboxAsyncStream implements AsyncStream<TransferableBlock> {
+  public static class ReadMailboxAsyncStream implements AsyncStream<TransferableBlock> {
     final ReceivingMailbox _mailbox;
     final BaseMailboxReceiveOperator _operator;
 

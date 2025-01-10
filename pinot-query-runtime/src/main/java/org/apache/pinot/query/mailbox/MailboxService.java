@@ -21,17 +21,30 @@ package org.apache.pinot.query.mailbox;
 import com.google.common.cache.Cache;
 import com.google.common.cache.CacheBuilder;
 import com.google.common.cache.RemovalListener;
+import java.nio.ByteBuffer;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import javax.annotation.Nullable;
 import org.apache.pinot.common.config.TlsConfig;
+import org.apache.pinot.common.datablock.DataBlock;
+import org.apache.pinot.common.datablock.DataBlockUtils;
+import org.apache.pinot.common.datablock.MetadataBlock;
 import org.apache.pinot.common.datatable.StatMap;
+import org.apache.pinot.common.proto.Mailbox;
 import org.apache.pinot.query.mailbox.channel.ChannelManager;
 import org.apache.pinot.query.mailbox.channel.GrpcMailboxServer;
+import org.apache.pinot.query.runtime.blocks.DataMseBlock;
+import org.apache.pinot.query.runtime.blocks.TransferableBlock;
 import org.apache.pinot.query.runtime.operator.MailboxSendOperator;
+import org.apache.pinot.query.runtime.plan.MultiStageQueryStats;
 import org.apache.pinot.spi.env.PinotConfiguration;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import reactor.core.publisher.ConnectableFlux;
+import reactor.core.publisher.Flux;
+import reactor.core.publisher.SynchronousSink;
 
 
 /**
@@ -130,6 +143,9 @@ public class MailboxService {
     }
   }
 
+  public Flux<TransferableBlock> getAsFlux(String mailboxId) {
+  }
+
   /**
    * Releases the receiving mailbox from the cache.
    *
@@ -143,5 +159,81 @@ public class MailboxService {
    */
   public void releaseReceivingMailbox(ReceivingMailbox mailbox) {
     _receivingMailboxCache.invalidate(mailbox.getId());
+  }
+
+  private final ConcurrentHashMap<String, ConnectableFlux<Mailbox.MailboxContent>> _fluxByMailboxId
+      = new ConcurrentHashMap<>();
+
+  public Flux<Mailbox.MailboxStatus> open(Flux<Mailbox.MailboxContent> request) {
+    request.take(1)
+        .map(content -> {
+          ConnectableFlux<Mailbox.MailboxContent> connectableFlux = request.publish();
+          String mailboxId = content.getMailboxId();
+          _fluxByMailboxId.put(mailboxId, connectableFlux);
+          return content;
+        })
+
+
+        .concatWith(request.skip(1))
+    ConnectableFlux<Mailbox.MailboxContent> connectable = request.publish(3);// TODO: Define the prefetch
+
+
+
+
+    return connectable.map(content -> Mailbox.MailboxStatus.getDefaultInstance());
+  }
+
+  public static class ContentReader {
+    private final StatMap<ReceivingMailbox.StatKey> _selfStats = new StatMap<>(ReceivingMailbox.StatKey.class);
+    private final MultiStageQueryStats _stats;
+    private long _lastArriveTime = System.currentTimeMillis();
+    private final int _stageId;
+
+    public ContentReader(int stageId) {
+      _stageId = stageId;
+      _stats = MultiStageQueryStats.emptyStats(stageId);
+    }
+
+    public void onRead(Mailbox.MailboxContent content, SynchronousSink<DataMseBlock> sink) {
+      ByteBuffer byteBuffer = content.getPayload().asReadOnlyByteBuffer();
+
+      long now = System.currentTimeMillis();
+      _selfStats.merge(ReceivingMailbox.StatKey.WAIT_CPU_TIME_MS, now - _lastArriveTime);
+      _lastArriveTime = now;
+      _selfStats.merge(ReceivingMailbox.StatKey.DESERIALIZED_BYTES, byteBuffer.remaining());
+      _selfStats.merge(ReceivingMailbox.StatKey.DESERIALIZED_MESSAGES, 1);
+
+      long deserStart = System.currentTimeMillis();
+      DataBlock dataBlock;
+      try {
+        dataBlock = DataBlockUtils.readFrom(byteBuffer);
+      }  catch (Exception e) {
+        sink.error(new RuntimeException("Cannot deserialize data block on stage " + _stageId, e));
+        return;
+      }
+      _selfStats.merge(ReceivingMailbox.StatKey.DESERIALIZATION_TIME_MS, System.currentTimeMillis() - deserStart);
+
+      if (dataBlock instanceof MetadataBlock) {
+        Map<Integer, String> exceptions = dataBlock.getExceptions();
+        if (exceptions.isEmpty()) {
+          _stats.mergeUpstream(dataBlock.getStatsByStage());
+          sink.complete();
+        } else {
+          Exception exception = extractException(exceptions);
+          sink.error(exception);
+        }
+      } else { // it is a data block type
+        sink.next(DataMseBlock.fromDataBlock(dataBlock));
+      }
+    }
+
+    private Exception extractException(Map<Integer, String> exceptions) {
+      // TODO: Decide how to handle multiple exceptions
+      if (exceptions.size() == 1) {
+        return new RuntimeException(exceptions.values().iterator().next());
+      } else {
+        return new RuntimeException("Multiple exceptions occurred: " + exceptions);
+      }
+    }
   }
 }
