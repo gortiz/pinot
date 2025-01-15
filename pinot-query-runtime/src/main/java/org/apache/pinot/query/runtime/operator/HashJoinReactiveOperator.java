@@ -7,6 +7,8 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
 import org.apache.calcite.rel.core.JoinRelType;
 import org.apache.pinot.calcite.rel.hint.PinotHintOptions;
 import org.apache.pinot.common.datatable.StatMap;
@@ -110,7 +112,10 @@ public class HashJoinReactiveOperator extends ReactiveOperator {
   public Flux<DataMseBlock> toFlux() {
     Mono<RightState> rightStateMono = consumeRightChild();
     Flux<DataMseBlock> leftJoin = rightStateMono
-        .flatMapMany(rightState -> _leftInput.toFlux().map(rightState::join));
+        .flatMapMany(rightState -> _leftInput.toFlux().map(rightState::join))
+        .doFinally(signalType -> {
+          calculateStats()
+        });
     if (_joinType != JoinRelType.RIGHT && _joinType != JoinRelType.FULL) {
       return leftJoin;
     }
@@ -119,7 +124,12 @@ public class HashJoinReactiveOperator extends ReactiveOperator {
 
   private Mono<RightState> consumeRightChild() {
     RightState rightState = new RightState();
+    AtomicLong start = new AtomicLong();
+
     return _rightInput.toFlux()
+        .doFirst(() -> {
+          start.set(System.currentTimeMillis());
+        })
         .handle((DataMseBlock block, SynchronousSink<RightState> sink) -> {
           List<Object[]> container = block.getRows();
           // Row based overflow check.
@@ -153,6 +163,10 @@ public class HashJoinReactiveOperator extends ReactiveOperator {
             sink.next(rightState);
           }
         })
+        .doFinally(signalType -> {
+          long duration = System.currentTimeMillis() - start.get();
+          _statMap.merge(HashJoinOperator.StatKey.TIME_BUILDING_HASH_TABLE_MS, duration);
+        })
         .last();
   }
 
@@ -173,6 +187,10 @@ public class HashJoinReactiveOperator extends ReactiveOperator {
 
   @Override
   public MultiStageQueryStats calculateStats() {
+    MultiStageQueryStats rightStats = _rightInput.calculateStats();
+    MultiStageQueryStats leftStats = _leftInput.calculateStats();
+    leftStats.mergeInOrder(rightStats, MultiStageOperator.Type.HASH_JOIN, _statMap)
+    return leftStats;
   }
 
   @Override

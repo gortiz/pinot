@@ -15,6 +15,9 @@ import org.apache.pinot.query.runtime.plan.OpChainExecutionContext;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import reactor.core.publisher.Flux;
+import reactor.core.publisher.SynchronousSink;
+import reactor.core.scheduler.Scheduler;
+import reactor.core.scheduler.Schedulers;
 
 
 public class MailboxSendReactiveOperator extends ReactiveOperator {
@@ -42,26 +45,39 @@ public class MailboxSendReactiveOperator extends ReactiveOperator {
   @Override
   public Flux<DataMseBlock> toFlux() {
     return _input.toFlux()
-        .handle((block, sink) -> {
+        .subscribeOn(_context.getNormalScheduler())
+        .handle((DataMseBlock block, SynchronousSink<DataMseBlock> sink) -> {
           TransferableBlock transferableBlock = getTransferableBlock(block);
-          boolean isEarlyTerminated = sendTransferableBlock(transferableBlock);
-          if (isEarlyTerminated) {
-            sink.complete();
-          }
-        })
-        .doOnComplete(() -> {
           try {
-            MultiStageQueryStats multiStageQueryStats = calculateStats();
-            TransferableBlock eosBlock = TransferableBlockUtils.getEndOfStreamTransferableBlock(
-                multiStageQueryStats);
-            sendTransferableBlock(eosBlock);
-            // After sending its own stats, the sending operator of the stage 1 has the complete view of all stats
-            // Therefore this is the only place we can update some of the metrics like total seen rows or time spent.
-            if (_context.getStageId() == 1) {
-              MailboxSendOperator.updateMetrics(eosBlock);
+            boolean isEarlyTerminated = sendTransferableBlock(transferableBlock);
+            if (isEarlyTerminated) {
+              sink.complete();
+            } else {
+              sink.next(block);
             }
           } catch (Exception e) {
-            LOGGER.error("Caught exception while finishing the exchange", e);
+            sink.error(e);
+          }
+        })
+        .doFinally(signalType -> {
+          switch (signalType) {
+            case CANCEL:
+            case ON_COMPLETE:
+              try {
+                MultiStageQueryStats multiStageQueryStats = calculateStats();
+                TransferableBlock eosBlock = TransferableBlockUtils.getEndOfStreamTransferableBlock(
+                    multiStageQueryStats);
+                sendTransferableBlock(eosBlock);
+                // After sending its own stats, the sending operator of the stage 1 has the complete view of all stats
+                // Therefore this is the only place we can update some of the metrics like total seen rows or time spent.
+                if (_context.getStageId() == 1) {
+                  MailboxSendOperator.updateMetrics(eosBlock);
+                }
+              } catch (Exception e) {
+                LOGGER.error("Caught exception while finishing the exchange", e);
+              }
+            default:
+              LOGGER.info("No stats send from {} given it finished with signal {}", _context.getId(), signalType);
           }
         })
         .doOnError(throwable -> {

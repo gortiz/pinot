@@ -16,6 +16,10 @@ public interface DataMseBlock extends Block {
 
   }
 
+  public static DataMseBlock fromTransferableBlock(TransferableBlock block) {
+
+  }
+
   public static DataMseBlock fromRows(List<Object[]> dataBlock, DataSchema schema) {
 
   }

@@ -35,7 +35,7 @@ public class OpChain implements AutoCloseable {
   private static final Logger LOGGER = LoggerFactory.getLogger(OpChain.class);
 
   private final OpChainId _id;
-  private final MultiStageOperator _root;
+  private final ReactiveOperator _root;
   private final Consumer<OpChainId> _finishCallback;
   private final ThreadExecutionContext _parentContext;
 
@@ -55,7 +55,7 @@ public class OpChain implements AutoCloseable {
     return _id;
   }
 
-  public Operator<TransferableBlock> getRoot() {
+  public ReactiveOperator getRoot() {
     return _root;
   }
 
@@ -76,27 +76,7 @@ public class OpChain implements AutoCloseable {
    */
   @Override
   public void close() {
-    try {
-      _root.close();
-    } finally {
-      _finishCallback.accept(getId());
-      LOGGER.trace("OpChain callback called");
-    }
-  }
-
-  /**
-   * cancel() is called when execution runs into error.
-   *
-   * Once the {@link OpChain} is being executed, this method should only be called from the thread that is actually
-   * executing it.
-   * @param e
-   */
-  public void cancel(Throwable e) {
-    try {
-      _root.cancel(e);
-    } finally {
-      _finishCallback.accept(getId());
-      LOGGER.trace("OpChain callback called");
-    }
+    _finishCallback.accept(getId());
+    LOGGER.trace("OpChain callback called");
   }
 }

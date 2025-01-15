@@ -20,6 +20,7 @@ package org.apache.pinot.query.runtime.executor;
 
 import java.util.Iterator;
 import java.util.Map;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Future;
@@ -27,11 +28,13 @@ import org.apache.pinot.core.util.trace.TraceRunnable;
 import org.apache.pinot.query.runtime.blocks.TransferableBlock;
 import org.apache.pinot.query.runtime.operator.OpChain;
 import org.apache.pinot.query.runtime.operator.OpChainId;
+import org.apache.pinot.query.runtime.plan.MultiStageQueryStats;
 import org.apache.pinot.spi.accounting.ThreadExecutionContext;
 import org.apache.pinot.spi.accounting.ThreadResourceUsageProvider;
 import org.apache.pinot.spi.trace.Tracing;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import reactor.core.scheduler.Schedulers;
 
 
 public class OpChainSchedulerService {
@@ -46,47 +49,31 @@ public class OpChainSchedulerService {
   }
 
   public void register(OpChain operatorChain) {
-    Future<?> scheduledFuture = _executorService.submit(new TraceRunnable() {
-      @Override
-      public void runJob() {
-        boolean isFinished = false;
-        TransferableBlock returnedErrorBlock = null;
-        Throwable thrown = null;
-        try {
+    CompletableFuture<?> scheduledFuture = operatorChain.getRoot().toFlux()
+        .doFirst(() -> {
           ThreadResourceUsageProvider threadResourceUsageProvider = new ThreadResourceUsageProvider();
           Tracing.ThreadAccountantOps.setupWorker(operatorChain.getId().getStageId(),
               ThreadExecutionContext.TaskType.MSE, threadResourceUsageProvider,
               operatorChain.getParentContext());
           LOGGER.trace("({}): Executing", operatorChain);
-          TransferableBlock result = operatorChain.getRoot().nextBlock();
-          while (!result.isEndOfStreamBlock()) {
-            result = operatorChain.getRoot().nextBlock();
-          }
-          isFinished = true;
-          if (result.isErrorBlock()) {
-            returnedErrorBlock = result;
-            LOGGER.error("({}): Completed erroneously {} {}", operatorChain, result.getQueryStats(),
-                result.getExceptions());
-          } else {
-            LOGGER.debug("({}): Completed {}", operatorChain, result.getQueryStats());
-          }
-        } catch (Exception e) {
-          LOGGER.error("({}): Failed to execute operator chain!", operatorChain, e);
-          thrown = e;
-        } finally {
+        })
+        .subscribeOn(Schedulers.fromExecutorService(_executorService))
+        .ignoreElements()
+        .doOnSuccess(ignoreMe -> { // ignoreMe will be null given we ignore values above
+          MultiStageQueryStats stats = operatorChain.getRoot().calculateStats();
+          LOGGER.debug("({}): Completed {}", operatorChain, stats);
+        })
+        .doOnError(throwable -> {
+          LOGGER.error("({}): Completed erroneously", operatorChain, throwable);
+        })
+        .doAfterTerminate(() -> {
           _submittedOpChainMap.remove(operatorChain.getId());
-          if (returnedErrorBlock != null || thrown != null) {
-            if (thrown == null) {
-              thrown = new RuntimeException("Error block " + returnedErrorBlock.getExceptions());
-            }
-            operatorChain.cancel(thrown);
-          } else if (isFinished) {
-            operatorChain.close();
-          }
+          operatorChain.close();
           Tracing.ThreadAccountantOps.clear();
-        }
-      }
-    });
+        })
+        .subscribeOn(Schedulers.fromExecutorService(_executorService))
+        .toFuture();
+
     _submittedOpChainMap.put(operatorChain.getId(), scheduledFuture);
   }
 

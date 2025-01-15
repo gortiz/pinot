@@ -18,8 +18,6 @@
  */
 package org.apache.pinot.query.mailbox.channel;
 
-import com.salesforce.reactorgrpc.stub.ReactorCallOptions;
-import io.grpc.CallOptions;
 import io.grpc.Server;
 import io.grpc.ServerBuilder;
 import io.grpc.netty.shaded.io.grpc.netty.NettyServerBuilder;
@@ -30,13 +28,10 @@ import javax.annotation.Nullable;
 import org.apache.pinot.common.config.TlsConfig;
 import org.apache.pinot.common.proto.Mailbox;
 import org.apache.pinot.common.proto.PinotMailboxGrpc;
-import org.apache.pinot.common.proto.ReactorPinotMailboxGrpc;
-import org.apache.pinot.common.proto.ReactorPinotQueryServerGrpc;
 import org.apache.pinot.core.transport.grpc.GrpcQueryServer;
 import org.apache.pinot.query.mailbox.MailboxService;
 import org.apache.pinot.spi.env.PinotConfiguration;
 import org.apache.pinot.spi.utils.CommonConstants;
-import reactor.core.publisher.Flux;
 
 
 /**
@@ -45,7 +40,7 @@ import reactor.core.publisher.Flux;
  * <p>This GRPC server is responsible for constructing {@link StreamObserver} out of an initial "open" request
  * send by the sender of the sender/receiver pair.
  */
-public class GrpcMailboxServer extends ReactorPinotMailboxGrpc.PinotMailboxImplBase {
+public class GrpcMailboxServer extends PinotMailboxGrpc.PinotMailboxImplBase {
   private static final long DEFAULT_SHUTDOWN_TIMEOUT_MS = 10_000L;
 
   private final MailboxService _mailboxService;
@@ -91,19 +86,7 @@ public class GrpcMailboxServer extends ReactorPinotMailboxGrpc.PinotMailboxImplB
   }
 
   @Override
-  public Flux<Mailbox.MailboxStatus> open(Flux<Mailbox.MailboxContent> request) {
-    return _mailboxService.open(request);
+  public StreamObserver<Mailbox.MailboxContent> open(StreamObserver<Mailbox.MailboxStatus> responseObserver) {
+    return new MailboxContentObserver(_mailboxService, responseObserver);
   }
-
-  @Override
-  protected CallOptions getCallOptions(int methodId) {
-    return CallOptions.DEFAULT
-        .withOption(ReactorCallOptions.CALL_OPTIONS_PREFETCH, 16)
-        .withOption(ReactorCallOptions.CALL_OPTIONS_LOW_TIDE, 4);
-  }
-
-//  @Override
-//  public StreamObserver<Mailbox.MailboxContent> open(StreamObserver<Mailbox.MailboxStatus> responseObserver) {
-//    return new MailboxContentObserver(_mailboxService, responseObserver);
-//  }
 }

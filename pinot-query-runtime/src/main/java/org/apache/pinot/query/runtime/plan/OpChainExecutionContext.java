@@ -20,6 +20,7 @@ package org.apache.pinot.query.runtime.plan;
 
 import java.util.Collections;
 import java.util.Map;
+import java.util.concurrent.ForkJoinPool;
 import javax.annotation.Nullable;
 import org.apache.pinot.query.mailbox.MailboxService;
 import org.apache.pinot.query.routing.StageMetadata;
@@ -30,6 +31,8 @@ import org.apache.pinot.query.runtime.plan.pipeline.PipelineBreakerResult;
 import org.apache.pinot.query.runtime.plan.server.ServerPlanRequestContext;
 import org.apache.pinot.spi.accounting.ThreadExecutionContext;
 import org.apache.pinot.spi.utils.CommonConstants;
+import reactor.core.scheduler.Scheduler;
+import reactor.core.scheduler.Schedulers;
 
 
 /**
@@ -130,5 +133,13 @@ public class OpChainExecutionContext {
   @Nullable
   public ThreadExecutionContext getParentContext() {
     return _parentContext;
+  }
+
+  public Scheduler getIoScheduler() {
+    return Schedulers.boundedElastic(); // TODO: Can be configured to run with virtual threads in Java 21. See javadoc
+  }
+
+  public Scheduler getNormalScheduler() {
+    return Schedulers.fromExecutorService(ForkJoinPool.commonPool()); // TODO: change to another pool
   }
 }

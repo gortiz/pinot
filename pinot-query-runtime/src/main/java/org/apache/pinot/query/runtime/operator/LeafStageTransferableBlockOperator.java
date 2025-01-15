@@ -58,6 +58,7 @@ import org.apache.pinot.core.query.request.context.ExplainMode;
 import org.apache.pinot.core.query.request.context.QueryContext;
 import org.apache.pinot.query.planner.plannode.ExplainedNode;
 import org.apache.pinot.query.planner.plannode.PlanNode;
+import org.apache.pinot.query.runtime.blocks.DataMseBlock;
 import org.apache.pinot.query.runtime.blocks.TransferableBlock;
 import org.apache.pinot.query.runtime.blocks.TransferableBlockUtils;
 import org.apache.pinot.query.runtime.operator.utils.TypeUtils;
@@ -69,6 +70,7 @@ import org.apache.pinot.spi.trace.Tracing;
 import org.apache.pinot.spi.utils.CommonConstants.Broker.Request.QueryOptionValue;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import reactor.core.publisher.Flux;
 
 
 /**
@@ -182,6 +184,49 @@ public class LeafStageTransferableBlockOperator extends MultiStageOperator {
     }
   }
 
+  public Flux<DataMseBlock> toFlux() {
+    if (_executionFuture == null) {
+      _executionFuture = startExecution();
+    }
+    return Flux.<DataMseBlock>generate(sink -> {
+      BaseResultsBlock block;
+      try {
+        block = _blockingQueue.poll(_context.getDeadlineMs() - System.currentTimeMillis(), TimeUnit.MILLISECONDS);
+      } catch (Exception e) {
+        sink.error(e);
+        return;
+      }
+      if (block == null) {
+        sink.error(new TimeoutException("Timed out waiting for results block"));
+      }
+      // Terminate when receiving exception block
+      Map<Integer, String> exceptions = _exceptions;
+      if (exceptions != null) {
+        sink.error(extractException(exceptions));
+      }
+      if (_isEarlyTerminated || block == LAST_RESULTS_BLOCK) {
+        constructMetadataBlock();
+        sink.complete();
+      } else {
+        // Regular data block
+        TransferableBlock transferableBlock = composeTransferableBlock(block, _dataSchema);
+        sink.next(DataMseBlock.fromTransferableBlock(transferableBlock));
+      }
+    })
+        .doOnCancel(this::close)
+        .subscribeOn(_context.getIoScheduler());
+  }
+
+
+  private static Exception extractException(Map<Integer, String> exceptions) {
+    // TODO: Decide how to handle multiple exceptions
+    if (exceptions.size() == 1) {
+      return new RuntimeException(exceptions.values().iterator().next());
+    } else {
+      return new RuntimeException("Multiple exceptions occurred: " + exceptions);
+    }
+  }
+
   private void mergeExecutionStats(@Nullable Map<String, String> executionStats) {
     if (executionStats != null) {
       for (Map.Entry<String, String> entry : executionStats.entrySet()) {
@@ -281,6 +326,10 @@ public class LeafStageTransferableBlockOperator extends MultiStageOperator {
         }
       }
     }
+  }
+
+  private MultiStageQueryStats calculateStats() {
+    return MultiStageQueryStats.createLeaf(_context.getStageId(), _statMap);
   }
 
   private TransferableBlock constructMetadataBlock() {

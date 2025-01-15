@@ -19,8 +19,10 @@
 package org.apache.pinot.query.runtime.operator;
 
 import com.google.common.base.Preconditions;
+import com.google.common.base.Supplier;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.function.Consumer;
 import javax.annotation.Nullable;
 import org.apache.calcite.rel.RelDistribution;
 import org.apache.pinot.common.datatable.StatMap;
@@ -71,8 +73,8 @@ public abstract class BaseMailboxReceiveOperator extends MultiStageOperator {
       List<ReadMailboxAsyncStream> asyncStreams = new ArrayList<>(numMailboxes);
       _receivingStats = new ArrayList<>(numMailboxes);
       for (String mailboxId : _mailboxIds) {
-        ReadMailboxAsyncStream asyncStream =
-            new ReadMailboxAsyncStream(_mailboxService.getReceivingMailbox(mailboxId), this);
+        ReadMailboxAsyncStream asyncStream = new ReadMailboxAsyncStream(
+            _mailboxService.getReceivingMailbox(mailboxId), _mailboxService::releaseReceivingMailbox);
         asyncStreams.add(asyncStream);
         _receivingStats.add(asyncStream._mailbox.getStatMap());
       }
@@ -139,11 +141,11 @@ public abstract class BaseMailboxReceiveOperator extends MultiStageOperator {
 
   public static class ReadMailboxAsyncStream implements AsyncStream<TransferableBlock> {
     final ReceivingMailbox _mailbox;
-    final BaseMailboxReceiveOperator _operator;
+    final Consumer<ReceivingMailbox> _onClose;
 
-    ReadMailboxAsyncStream(ReceivingMailbox mailbox, BaseMailboxReceiveOperator operator) {
+    ReadMailboxAsyncStream(ReceivingMailbox mailbox, Consumer<ReceivingMailbox> onClose) {
       _mailbox = mailbox;
-      _operator = operator;
+      _onClose = onClose;
     }
 
     @Override
@@ -156,7 +158,7 @@ public abstract class BaseMailboxReceiveOperator extends MultiStageOperator {
     public TransferableBlock poll() {
       TransferableBlock block = _mailbox.poll();
       if (block != null && block.isSuccessfulEndOfStreamBlock()) {
-        _operator._mailboxService.releaseReceivingMailbox(_mailbox);
+        _onClose.accept(_mailbox);
       }
       return block;
     }
