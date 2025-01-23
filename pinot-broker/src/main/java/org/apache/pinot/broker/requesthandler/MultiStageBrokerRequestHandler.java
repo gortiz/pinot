@@ -20,7 +20,6 @@ package org.apache.pinot.broker.requesthandler;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.node.JsonNodeFactory;
-import com.google.common.collect.Sets;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.HashSet;
@@ -144,11 +143,14 @@ public class MultiStageBrokerRequestHandler extends BaseBrokerRequestHandler {
       database = DatabaseUtils.extractDatabaseFromQueryRequest(queryOptions, httpHeaders);
       boolean inferPartitionHint = _config.getProperty(CommonConstants.Broker.CONFIG_OF_INFER_PARTITION_HINT,
           CommonConstants.Broker.DEFAULT_INFER_PARTITION_HINT);
+      boolean defaultUseSpool = _config.getProperty(CommonConstants.Broker.CONFIG_OF_SPOOLS,
+          CommonConstants.Broker.DEFAULT_OF_SPOOLS);
       QueryEnvironment queryEnvironment = new QueryEnvironment(QueryEnvironment.configBuilder()
           .database(database)
           .tableCache(_tableCache)
           .workerManager(_workerManager)
           .defaultInferPartitionHint(inferPartitionHint)
+          .defaultUseSpools(defaultUseSpool)
           .build());
       switch (sqlNodeAndOptions.getSqlNode().getKind()) {
         case EXPLAIN:
@@ -199,17 +201,17 @@ public class MultiStageBrokerRequestHandler extends BaseBrokerRequestHandler {
     }
 
     DispatchableSubPlan dispatchableSubPlan = queryPlanResult.getQueryPlan();
-    Set<String> tableNames = queryPlanResult.getTableNames();
 
+    Set<QueryServerInstance> servers = new HashSet<>();
+    for (DispatchablePlanFragment planFragment: dispatchableSubPlan.getQueryStageList()) {
+      servers.addAll(planFragment.getServerInstances());
+    }
+
+    Set<String> tableNames = queryPlanResult.getTableNames();
     _brokerMetrics.addMeteredGlobalValue(BrokerMeter.MULTI_STAGE_QUERIES_GLOBAL, 1);
     for (String tableName : tableNames) {
       _brokerMetrics.addMeteredTableValue(tableName, BrokerMeter.MULTI_STAGE_QUERIES, 1);
     }
-
-    dispatchableSubPlan.getQueryStageList().stream()
-        .map(stage -> stage.getServerInstanceToWorkerIdMap().keySet())
-        .reduce(new HashSet<>(), Sets::union)
-        ;
 
     requestContext.setTableNames(List.copyOf(tableNames));
 
@@ -282,8 +284,12 @@ public class MultiStageBrokerRequestHandler extends BaseBrokerRequestHandler {
       BrokerResponseNativeV2 brokerResponse = new BrokerResponseNativeV2();
       brokerResponse.setResultTable(queryResults.getResultTable());
       brokerResponse.setTablesQueried(tableNames);
-      // TODO: Add servers queried/responded stats
       brokerResponse.setBrokerReduceTimeMs(queryResults.getBrokerReduceTimeMs());
+      // MSE cannot finish if a single queried server did not respond, so we can use the same count for
+      // both the queried and responded stats. Minus one prevents the broker to be included in the count
+      // (it will always be included because of the root of the query plan)
+      brokerResponse.setNumServersQueried(servers.size() - 1);
+      brokerResponse.setNumServersResponded(servers.size() - 1);
 
       // Attach unavailable segments
       int numUnavailableSegments = 0;

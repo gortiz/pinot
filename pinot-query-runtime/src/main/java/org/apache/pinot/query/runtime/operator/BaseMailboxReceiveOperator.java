@@ -19,7 +19,6 @@
 package org.apache.pinot.query.runtime.operator;
 
 import com.google.common.base.Preconditions;
-import com.google.common.base.Supplier;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.function.Consumer;
