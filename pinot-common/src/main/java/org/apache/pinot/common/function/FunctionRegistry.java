@@ -76,7 +76,7 @@ public class FunctionRegistry {
   // Key is canonical name
   public static final Map<String, PinotScalarFunction> FUNCTION_MAP;
 
-  private static final int VAR_ARG_KEY = -1;
+  public static final int VAR_ARG_KEY = -1;
 
   static {
     long startTimeMs = System.currentTimeMillis();
@@ -244,7 +244,7 @@ public class FunctionRegistry {
     private final String _name;
     private final Map<Integer, FunctionInfo> _functionInfoMap;
 
-    private ArgumentCountBasedScalarFunction(String name, Map<Integer, FunctionInfo> functionInfoMap) {
+    public ArgumentCountBasedScalarFunction(String name, Map<Integer, FunctionInfo> functionInfoMap) {
       _name = name;
       _functionInfoMap = functionInfoMap;
     }
