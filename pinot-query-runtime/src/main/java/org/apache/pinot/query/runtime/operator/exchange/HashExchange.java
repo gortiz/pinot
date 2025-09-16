@@ -20,11 +20,11 @@ package org.apache.pinot.query.runtime.operator.exchange;
 
 import com.google.common.annotations.VisibleForTesting;
 import java.io.IOException;
-import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.TimeoutException;
 import java.util.function.Function;
 import org.apache.pinot.core.query.aggregation.function.AggregationFunction;
+import org.apache.pinot.core.util.AppendOnlyList;
 import org.apache.pinot.query.mailbox.SendingMailbox;
 import org.apache.pinot.query.planner.partitioning.EmptyKeySelector;
 import org.apache.pinot.query.planner.partitioning.KeySelector;
@@ -62,12 +62,13 @@ class HashExchange extends BlockExchange {
       return;
     }
 
-    List<Object[]>[] mailboxIdToRowsMap = new List[numMailboxes];
-    for (int i = 0; i < numMailboxes; i++) {
-      mailboxIdToRowsMap[i] = new ArrayList<>();
-    }
     RowHeapDataBlock rowHeapBlock = block.asRowHeap();
     List<Object[]> rows = rowHeapBlock.getRows();
+
+    AppendOnlyList<Object[]>[] mailboxIdToRowsMap = new AppendOnlyList[numMailboxes];
+    for (int i = 0; i < numMailboxes; i++) {
+      mailboxIdToRowsMap[i] = new AppendOnlyList<>();
+    }
     for (Object[] row : rows) {
       int mailboxId = _keySelector.computeHash(row) % numMailboxes;
       mailboxIdToRowsMap[mailboxId].add(row);

@@ -20,11 +20,14 @@ package org.apache.pinot.query.runtime.blocks;
 
 import java.io.IOException;
 import java.io.UncheckedIOException;
+import java.util.AbstractList;
+import java.util.ArrayList;
 import java.util.List;
 import javax.annotation.Nullable;
 import org.apache.pinot.common.utils.DataSchema;
 import org.apache.pinot.core.common.datablock.DataBlockBuilder;
 import org.apache.pinot.core.query.aggregation.function.AggregationFunction;
+import org.apache.pinot.core.util.AppendOnlyList;
 
 
 /// A block that contains data in row heap format.
@@ -124,5 +127,79 @@ public class RowHeapDataBlock implements MseBlock.Data {
   @Override
   public String toString() {
     return "{\"type\": \"rowHeap\", \"numRows\": " + getNumRows() + "}";
+  }
+
+  public static class AppendBuilder {
+
+  }
+
+  /// A cheap list implementation prepared just for the hash partitioning use case.
+  ///
+  /// Instead of supporting all the List operations, this class only supports adding
+  /// elements to the end of the list. By doing that, if the list is large, we don't need
+  /// to allocate a large continuous array to hold all the elements or copy the elements
+  /// when the array needs to grow. Instead, we allocate small fixed-size arrays (pages
+  /// of size PAGE_SIZE) and link them together.
+  ///
+  /// This class is also not thread-safe.
+  static class PartitionList extends AbstractList<Object[]> {
+    private static final int PAGE_SIZE = 1024;
+    private final ArrayList<Object[][]> _pages = new ArrayList<>(PAGE_SIZE);
+    private Object[][] _currentPage;
+    private int _indexInCurrentPage;
+
+    public PartitionList() {
+      addPage();
+    }
+
+    private void addPage() {
+      _currentPage = new Object[PAGE_SIZE][];
+      _pages.add(_currentPage);
+      _indexInCurrentPage = 0;
+    }
+
+    @Override
+    public boolean add(Object[] objects) {
+      if (_indexInCurrentPage >= PAGE_SIZE) {
+        addPage();
+      }
+      _currentPage[_indexInCurrentPage++] = objects;
+      return true;
+    }
+
+    @Override
+    public Object[] get(int index) {
+      if (index < 0 || index >= size()) {
+        throw new IndexOutOfBoundsException("Index: " + index + ", Size: " + size());
+      }
+      int pageIndex = index / PAGE_SIZE;
+      int indexInPage = index % PAGE_SIZE;
+      return _pages.get(pageIndex)[indexInPage];
+    }
+
+    @Override
+    public int size() {
+      return (_pages.size() - 1) * PAGE_SIZE + _indexInCurrentPage;
+    }
+
+    public static class AppendBuilder {
+      private final AppendOnlyList<Object[]> _appendOnlyList = new AppendOnlyList<>();
+      private final DataSchema _dataSchema;
+      @Nullable
+      private final AggregationFunction[] _aggFunctions;
+
+      public AppendBuilder(DataSchema dataSchema, @Nullable AggregationFunction[] aggFunctions) {
+        _dataSchema = dataSchema;
+        _aggFunctions = aggFunctions;
+      }
+
+      public void append(Object[] row) {
+        _appendOnlyList.add(row);
+      }
+
+      public RowHeapDataBlock build() {
+        return new RowHeapDataBlock(_appendOnlyList, _dataSchema, _aggFunctions);
+      }
+    }
   }
 }

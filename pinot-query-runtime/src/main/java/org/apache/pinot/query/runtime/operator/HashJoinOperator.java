@@ -32,6 +32,7 @@ import org.apache.pinot.query.planner.partitioning.KeySelector;
 import org.apache.pinot.query.planner.partitioning.KeySelectorFactory;
 import org.apache.pinot.query.planner.plannode.JoinNode;
 import org.apache.pinot.query.runtime.blocks.MseBlock;
+import org.apache.pinot.query.runtime.blocks.RowHeapDataBlock;
 import org.apache.pinot.query.runtime.operator.join.DoubleLookupTable;
 import org.apache.pinot.query.runtime.operator.join.FloatLookupTable;
 import org.apache.pinot.query.runtime.operator.join.IntLookupTable;
@@ -231,7 +232,7 @@ public class HashJoinOperator extends BaseJoinOperator {
   private List<Object[]> buildJoinedDataBlockDuplicateKeys(MseBlock.Data leftBlock) {
     assert _rightTable != null : "Right table should not be null when building joined rows";
     List<Object[]> leftRows = leftBlock.asRowHeap().getRows();
-    List<Object[]> rows = new ArrayList<>(leftRows.size());
+    RowHeapDataBlock.AppendBuilder blockBuilder = new RowHeapDataBlock.AppendBuilder();
 
     for (Object[] leftRow : leftRows) {
       sampleAndCheckInterruptionPeriodically(rows.size());
