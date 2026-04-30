@@ -46,7 +46,7 @@ Skills are plain Markdown with YAML frontmatter — Claude reads them and follow
 - `license:format` — inserts the ASF header into new files that don't have it. Governed by `HEADER` at repo root.
 - `checkstyle:check` — `config/checkstyle.xml`. Top offenders: `LineLength` (120), `AvoidStarImport`, `AvoidStaticImport`, `HideUtilityClassConstructor`, `NeedBraces`.
 - `license:check` — final gate confirming every touched file has a header.
-- `test-compile -Xlint:all` — compiles both `src/main/` and `src/test/` with all compiler warnings enabled (deprecation, unchecked casts, raw types, fallthrough, etc.). Does not use `clean` — incremental compilation still emits warnings for the entire module, and per-line filtering handles pre-existing warnings. Using `clean` would break modules with generated sources (e.g., JavaCC in `pinot-common`). Warnings are filtered to only lines added in the diff (not just by file). Uses `-am` because compilation needs upstream deps.
+- `test-compile -Xlint:all` — compiles both `src/main/` and `src/test/` with all compiler warnings enabled (deprecation, unchecked casts, raw types, fallthrough, etc.). Does not use `clean` — incremental compilation still emits warnings for the entire module, and per-line filtering handles pre-existing warnings. Using `clean` would break modules with generated sources (e.g., JavaCC in `pinot-common`). Warnings are filtered to only lines added in the diff (not just by file). Uses `-am` with Maven 3 (compilation needs upstream dep JARs); with Maven 4, deps are resolved automatically and `-am` is not needed.
 
 **Example scenarios:**
 
@@ -65,7 +65,8 @@ Skills are plain Markdown with YAML frontmatter — Claude reads them and follow
 - `/precommit all` — run on the entire repo; slow (several minutes).
 
 **Known quirks:**
-- Steps 1–4 don't need `-am`. Only step 5 (compile) uses `-am` because javac needs upstream jars on the classpath.
+- Steps 1–4 don't need `-am`. Step 5 (compile) uses `-am` with Maven 3 (javac needs upstream jars on the classpath); with Maven 4, `-am` is not needed as deps are resolved automatically.
+- The skill detects the best available Maven executor: `mvnd2` (Maven 4 daemon) → `mvnd` (check version) → `mvn4` → `./mvnw` → `mvn`.
 - Spotless sometimes reformats files you hadn't touched if they were non-compliant to begin with. Review the auto-fix diff before staging.
 - Violations in `pinot-controller/src/main/resources/` (the React UI) are not handled by the Maven plugins — skip that tree.
 - Compiler warnings are filtered to added lines in the diff only — pre-existing warnings, even in files you touched, are not reported.
@@ -74,15 +75,15 @@ Skills are plain Markdown with YAML frontmatter — Claude reads them and follow
 
 ## `/run-test`
 
-**What it does.** Given a test class name (or `Class#method`), finds the source file via glob, walks up to the owning module, and builds the correct `./mvnw -pl <module> -am -Dtest=<Class>[#<method>] -Dsurefire.failIfNoSpecifiedTests=false test` command.
+**What it does.** Given a test class name (or `Class#method`), finds the source file via glob, walks up to the owning module, detects the best Maven executor (`mvnd2` → `mvnd` → `mvn4` → `./mvnw` → `mvn`) and Maven version, then builds the correct command: `$MVN -pl <module> [-am if Maven 3] -Dtest=<Class>[#<method>] -Dsurefire.failIfNoSpecifiedTests=false test`.
 
-**Why `-Dsurefire.failIfNoSpecifiedTests=false` is always needed:** with `-am`, Maven builds upstream modules and runs Surefire in each one. Upstream modules don't have the target test, so Surefire's default behaviour (fail when the `-Dtest` filter matches nothing) kills the build at the first upstream module. The flag makes "no tests matched in this module" a no-op and lets the build progress to the module that actually contains the test.
+**Why `-Dsurefire.failIfNoSpecifiedTests=false` is always included:** with Maven 3 + `-am`, Maven builds upstream modules and runs Surefire in each one. Upstream modules don't have the target test, so Surefire's default behaviour (fail when the `-Dtest` filter matches nothing) kills the build at the first upstream module. The flag makes "no tests matched in this module" a no-op and lets the build progress to the module that actually contains the test. With Maven 4 (no `-am`), this issue doesn't arise, but the flag is harmless to include.
 
 **Integration test heuristics** (used only to warn the user about expected runtime, not to change the command): path contains `pinot-integration-tests`, OR filename ends with `IntegrationTest.java` / `IT.java` / `ClusterTest.java` / `EndToEndTest.java`, OR the module is `pinot-integration-tests` / `pinot-compatibility-verifier`.
 
 **Example scenarios:**
 
-- **Unit test** → `/run-test BigDecimalUtilsTest` → resolves to `pinot-spi/src/test/java/.../BigDecimalUtilsTest.java` → runs `./mvnw -pl pinot-spi -am -Dtest=BigDecimalUtilsTest test`. Verified: 5 tests pass in ~6s after the dependency build.
+- **Unit test** → `/run-test BigDecimalUtilsTest` → resolves to `pinot-spi/src/test/java/.../BigDecimalUtilsTest.java` → runs `$MVN -pl pinot-spi [-am if Maven 3] -Dtest=BigDecimalUtilsTest test`. Verified: 5 tests pass in ~6s after the dependency build.
 - **Integration test** → `/run-test OfflineClusterIntegrationTest` → path `pinot-integration-tests/...` triggers integration detection → adds `-Dsurefire.failIfNoSpecifiedTests=false`. Runs for 10–20 minutes depending on the test.
 - **Method selector** → `/run-test BigDecimalUtilsTest#testRoundTrip` → Maven's `-Dtest=Class#method` form.
 - **Ambiguous name** → `/run-test AggregationFunctionColumnPairTest` → matches two files in `pinot-segment-spi` (`.../misc/` and `.../index/startree/`). Skill lists both with their package paths and asks the user to pick. Does not guess.
@@ -90,7 +91,7 @@ Skills are plain Markdown with YAML frontmatter — Claude reads them and follow
 - **Abstract base class** → warns that the class has no `@Test` methods and suggests concrete subclasses via grep.
 
 **Known quirks:**
-- First run builds all upstream modules via `-am`, which can be 5–15 minutes on a cold tree. Subsequent runs against the same module skip rebuilds.
+- First run on Maven 3 builds all upstream modules via `-am`, which can be 5–15 minutes on a cold tree. With Maven 4 (via `mvnd2`, `mvnd v2.x`, or `mvn4`), upstream deps are resolved automatically and the first run is faster. Subsequent runs against the same module skip rebuilds regardless of Maven version.
 - Pinot uses TestNG; Surefire's `-Dtest=Class#method` syntax still works.
 - Integration tests spin up embedded Helix/ZK/Kafka and bind to localhost ports. Don't run two at once.
 
@@ -148,7 +149,7 @@ Why `org.openjdk.jmh.Main` instead of the per-benchmark `pinot-<Class>.sh`:
 
 **Known quirks:**
 
-- **Stale-jar trap (the real failure mode).** If the current tree's `pinot-perf/target/pinot-perf-pkg/lib/` was built from a previous ref that pulled in different versions of a transitive dep (e.g. `zookeeper-3.9.4.jar` + `zookeeper-3.9.5.jar`), the classpath glob loads both and you get `NoSuchMethodError` at runtime. Pinot/Helix often swallows this as `ZkTimeoutException: Unable to connect to zookeeper server within timeout: 1000`, which looks like an infrastructure/timing issue but is actually a classpath bug. The skill defends against this by always using `./mvnw -pl pinot-perf clean package -DskipTests -am` on the current tree (the worktree is a fresh checkout so baseline is immune). **If you see `ZkTimeoutException` in a second run, don't tune timeouts — check `lib/` for version duplicates.**
+- **Stale-jar trap (the real failure mode).** If the current tree's `pinot-perf/target/pinot-perf-pkg/lib/` was built from a previous ref that pulled in different versions of a transitive dep (e.g. `zookeeper-3.9.4.jar` + `zookeeper-3.9.5.jar`), the classpath glob loads both and you get `NoSuchMethodError` at runtime. Pinot/Helix often swallows this as `ZkTimeoutException: Unable to connect to zookeeper server within timeout: 1000`, which looks like an infrastructure/timing issue but is actually a classpath bug. The skill defends against this by always using `$MVN -pl pinot-perf clean package -DskipTests` (add `-am` with Maven 3) on the current tree (the worktree is a fresh checkout so baseline is immune). **If you see `ZkTimeoutException` in a second run, don't tune timeouts — check `lib/` for version duplicates.**
 - JMH's `-l` flag doesn't help — Pinot benchmark classes have custom `main()` methods that ignore CLI args. There is no fast sanity check; the first real run is also the first verification.
 - The generated `pinot-<Class>.sh` scripts hard-code `-Xms24G -Xmx24G`. Avoid them; use the `java -cp 'lib/*'` form with your own `-Xmx`.
 - Only ~21 of ~60 benchmark classes are configured as appassembler programs — not every benchmark has a `.sh`. Direct `java -cp` works for all of them.

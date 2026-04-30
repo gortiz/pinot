@@ -89,20 +89,34 @@ Apache Pinot is a real-time distributed OLAP datastore for low-latency analytics
 
 ## Build commands
 - **JDK**: Use JDK 21+ for Pinot services and the default build; client and SPI artifacts still target Java 11 bytecode.
-- **Default build**: `./mvnw clean install`
-- **Fast dev build**: `./mvnw verify -Ppinot-fastdev`
-- **Full binary/shaded build**: `./mvnw clean install -DskipTests -Pbin-dist -Pbuild-shaded-jar`
-- **Build a module with deps**: `./mvnw -pl pinot-server -am test`
-- **Single test**: `./mvnw -pl pinot-segment-local -Dtest=RangeIndexTest test`
-- **Single integration test**: `./mvnw -pl pinot-integration-tests -am -Dtest=OfflineClusterIntegrationTest -Dsurefire.failIfNoSpecifiedTests=false test`
+
+### Build tool selection (check in this order)
+Pick the first available option — prefer daemon builds and Maven 4:
+1. **`mvnd2`** — Maven Daemon v2, uses Maven 4. Best option when present.
+2. **`mvnd`** — Maven Daemon. Run `mvnd --version` to get its Maven version. If it reports `mvnd 2.x.x`, it uses Maven 4; otherwise Maven 3. Prefer `mvnd` over `./mvnw`/`mvn` for speed regardless of Maven version.
+3. **`mvn4`** — Explicit Maven 4 binary. Use this if `mvnd` is on Maven 3 (or absent) and `mvn4` is present.
+4. **`./mvnw`** — Repo Maven wrapper. Run `./mvnw --version` to determine the Maven major version. Fallback when no daemon is available.
+5. **`mvn`** — System Maven. Last resort.
+
+> Maven 4 resolves upstream module dependencies automatically — **`-am` is not required**. Maven 3 requires `-am` to build upstream modules first.
+
+### Example commands (substitute `<MVN>` with your chosen executable above)
+- **Default build**: `<MVN> clean install`
+- **Fast dev build**: `<MVN> verify -Ppinot-fastdev`
+- **Full binary/shaded build**: `<MVN> clean install -DskipTests -Pbin-dist -Pbuild-shaded-jar`
+- **Build a module (Maven 4)**: `<MVN> -pl pinot-server test`
+- **Build a module (Maven 3)**: `<MVN> -pl pinot-server -am test`
+- **Single test**: `<MVN> -pl pinot-segment-local -Dtest=RangeIndexTest test`
+- **Single integration test (Maven 4)**: `<MVN> -pl pinot-integration-tests -Dtest=OfflineClusterIntegrationTest -Dsurefire.failIfNoSpecifiedTests=false test`
+- **Single integration test (Maven 3)**: `<MVN> -pl pinot-integration-tests -am -Dtest=OfflineClusterIntegrationTest -Dsurefire.failIfNoSpecifiedTests=false test`
 - **Quickstart (after build)**: `build/bin/quick-start-batch.sh`
 
 ## Code style and formatting
-- Run `./mvnw spotless:apply` to auto-format code.
-- Run `./mvnw checkstyle:check` to validate style. Checkstyle config is in `config/checkstyle.xml`.
-- Run `./mvnw license:format` to add license headers to new files.
-- Run `./mvnw license:check` to validate license headers.
-- Always use the Maven wrapper (`./mvnw`) rather than a system `mvn`.
+- Run `<MVN> spotless:apply` to auto-format code.
+- Run `<MVN> checkstyle:check` to validate style. Checkstyle config is in `config/checkstyle.xml`.
+- Run `<MVN> license:format` to add license headers to new files.
+- Run `<MVN> license:check` to validate license headers.
+- Prefer `mvnd`/`mvnd2` over `./mvnw` for speed; prefer `./mvnw` over a bare `mvn` to ensure the correct Maven version. See "Build tool selection" above.
 
 ## Coding conventions
 - Add class-level Javadoc for new classes; describe behavior and thread-safety.
@@ -114,16 +128,16 @@ Apache Pinot is a real-time distributed OLAP datastore for low-latency analytics
 - Avoid deprecated APIs in new code. If you must reference one (e.g., for backward-compat serialization or to test the deprecated path), justify it with a comment.
 
 ## Pre-commit checks
-Before pushing a commit, run the following checks on the affected modules and fix any failures:
-1. `./mvnw spotless:apply -pl <module>` — auto-format code.
-2. `./mvnw checkstyle:check -pl <module>` — validate style conformance.
-3. `./mvnw license:format -pl <module>` — add missing license headers to new files.
-4. `./mvnw license:check -pl <module>` — verify all files have correct license headers.
+Before pushing a commit, run the following checks on the affected modules and fix any failures (use `<MVN>` from "Build tool selection" above):
+1. `<MVN> spotless:apply -pl <module>` — auto-format code.
+2. `<MVN> checkstyle:check -pl <module>` — validate style conformance.
+3. `<MVN> license:format -pl <module>` — add missing license headers to new files.
+4. `<MVN> license:check -pl <module>` — verify all files have correct license headers.
 
 Do not push until all four checks pass cleanly.
 
 Additionally, run the compiler warning check and fix what you can:
-5. `./mvnw test-compile -pl <module> -am -Dmaven.compiler.showDeprecation=true -Dmaven.compiler.showWarnings=true` — review warnings (deprecation, unchecked, etc.) in your changed code and fix where possible.
+5. `<MVN> test-compile -pl <module> -am -Dmaven.compiler.showDeprecation=true -Dmaven.compiler.showWarnings=true` — review warnings (deprecation, unchecked, etc.) in your changed code and fix where possible. With Maven 4, omit `-am` (deps are resolved automatically).
 
 Claude Code users can invoke `/precommit` to automate all of the above.
 
@@ -142,6 +156,7 @@ After completing any coding task (bug fix, feature, refactor, etc.), you MUST ru
 - Do not skip the review even if the change seems trivial.
 
 ## Common gotchas
-- This is a large multi-module Maven project. Building the entire project takes a long time — prefer building only the modules you need with `-pl <module> -am`.
+- This is a large multi-module Maven project. Building the entire project takes a long time — prefer building only the modules you need. With Maven 3 use `-pl <module> -am`; with Maven 4, `-am` is unnecessary. Use `mvnd`/`mvnd2` when available for faster daemon builds.
+- To check your Maven version: `mvnd --version`, `mvnd2 --version`, `mvn4 --version`, `./mvnw --version`, or `mvn --version` depending on what's installed. `mvnd 2.x.x` means Maven 4 under the hood.
 - When running tests, use `-Dtest=ClassName` to run a specific test class rather than the full suite.
 - Mixed-version compatibility matters — do not break wire protocols or serialization formats without careful consideration.

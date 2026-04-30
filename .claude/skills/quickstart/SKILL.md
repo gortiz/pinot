@@ -45,7 +45,9 @@ Usage:
 2. **If the script is missing, offer to build.** Ask the user:
    > Quickstart scripts not found. Build them now?
    > - Full bin-dist (recommended for first time): `./mvnw clean install -DskipTests -Pbin-dist -Pbuild-shaded-jar` (~10 min)
-   > - Just pinot-tools: `./mvnw -pl pinot-tools -am package -DskipTests` (~3 min)
+   > - Just pinot-tools (Maven 4): `$MVN -pl pinot-tools package -DskipTests` (~3 min)
+   > - Just pinot-tools (Maven 3): `$MVN -pl pinot-tools -am package -DskipTests` (~3 min)
+   > (Use `mvnd`/`mvnd2`/`mvn4` where available; see CLAUDE.md "Build tool selection" for the detection order.)
 
    Run the one they pick in the foreground. If they're re-running after a prior build, `build/bin/` should already exist.
 

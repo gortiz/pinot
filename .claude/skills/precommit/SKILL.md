@@ -28,7 +28,9 @@ The five checks (in order):
 2. `./mvnw license:format -pl <modules>` — adds ASF headers to any new files.
 3. `./mvnw checkstyle:check -pl <modules>` — validates style; fails hard.
 4. `./mvnw license:check -pl <modules>` — validates headers; fails hard.
-5. `./mvnw test-compile -pl <modules> -am -Dmaven.compiler.showDeprecation=true -Dmaven.compiler.showWarnings=true '-Dmaven.compiler.compilerArgs=-Xlint:all'` — compiles and checks for deprecation, unchecked casts, raw types, fallthrough, etc. Warnings are filtered to only lines added in the diff.
+5. Compiler check — see step 7 for the exact command; it differs by Maven version.
+   - **Maven 4:** `./mvnw test-compile -pl <modules> -Dmaven.compiler.showDeprecation=true -Dmaven.compiler.showWarnings=true '-Dmaven.compiler.compilerArgs=-Xlint:all'` (no `-am`, deps resolved automatically)
+   - **Maven 3:** `./mvnw test-compile -pl <modules> -am -Dmaven.compiler.showDeprecation=true -Dmaven.compiler.showWarnings=true '-Dmaven.compiler.compilerArgs=-Xlint:all'`
 
 Steps 1 and 2 are auto-fixers. Steps 3 and 4 are validators — if they fail after the auto-fixers ran, report the failure with the exact offending file/line from the Maven output and stop. Do not try to manually patch style errors; fix the underlying issue or ask the user. Step 5 is a compiler check — if it produces warnings on newly added lines, report them. Prefer the non-deprecated replacement; suppress with `@SuppressWarnings` only with a comment explaining why the deprecated reference is required (e.g., backward-compat serialization, mixed-version SPI calls, testing the deprecated path).
 
@@ -61,11 +63,26 @@ Steps 1 and 2 are auto-fixers. Steps 3 and 4 are validators — if they fail aft
 
 6. **Build the added-line set for compiler warning filtering.** This runs after the auto-fixers so that line numbers reflect the post-fix state (spotless may remove imports, shifting line numbers). Run `git diff --unified=0 HEAD -- <changed .java files>` and parse the `@@` hunk headers to extract the added line ranges. Build a map of `file → set of added line numbers`. For untracked `.java` files (new files not yet in git), `git diff` returns nothing — treat all lines as added (use `wc -l` to get the line count and add 1 through N to the set).
 
-7. **Run the compiler check.**
+7. **Run the compiler check.** First, select the build tool and detect the Maven version (check in this order):
+   - `mvnd2` present → use it (`MVN=mvnd2`, `MVN_MAJOR=4`)
+   - `mvnd` present → run `mvnd --version`; if `mvnd 2.x.x` then `MVN_MAJOR=4`, else `MVN_MAJOR=3`. If `MVN_MAJOR=3` and `mvn4` is also present, switch to `mvn4` for Maven 4 features.
+   - `mvn4` present (and no daemon) → `MVN=mvn4`, `MVN_MAJOR=4`
+   - `./mvnw` present → `MVN=./mvnw`; extract major from `./mvnw --version`
+   - fallback → `MVN=mvn`; extract major from `mvn --version`
+
+   Then run the appropriate form:
+
+   **Maven 4** (deps resolved automatically, no `-am`):
    ```
-   ./mvnw test-compile -pl <modules> -am -Dmaven.compiler.showDeprecation=true -Dmaven.compiler.showWarnings=true '-Dmaven.compiler.compilerArgs=-Xlint:all'
+   $MVN test-compile -pl <modules> -Dmaven.compiler.showDeprecation=true -Dmaven.compiler.showWarnings=true '-Dmaven.compiler.compilerArgs=-Xlint:all'
    ```
-   This is the only step that uses `-am` — compilation needs upstream dependencies built, unlike the other steps. Do not use `clean` — incremental compilation still emits warnings for all files in the module, and the per-line filter (step 6) handles pre-existing warnings. Using `clean` would break modules with generated sources (e.g., JavaCC in `pinot-common`) and adds significant overhead on deep modules. If warnings seem missing (e.g., stale `target/` from a different branch), the user can manually run `./mvnw clean generate-sources test-compile -pl <modules> -am ...` to force full recompilation.
+
+   **Maven 3** (`-am` required — compilation needs upstream dependency JARs on the classpath):
+   ```
+   $MVN test-compile -pl <modules> -am -Dmaven.compiler.showDeprecation=true -Dmaven.compiler.showWarnings=true '-Dmaven.compiler.compilerArgs=-Xlint:all'
+   ```
+
+   Do not use `clean` — incremental compilation still emits warnings for all files in the module, and the per-line filter (step 6) handles pre-existing warnings. Using `clean` would break modules with generated sources (e.g., JavaCC in `pinot-common`) and adds significant overhead on deep modules. If warnings seem missing (e.g., stale `target/` from a different branch), the user can manually run `$MVN clean generate-sources test-compile -pl <modules> [-am for Maven 3] ...` to force full recompilation.
 
    Parse the output for `[WARNING]` lines. **Filter to only added lines from the diff** — for each warning of the form `[WARNING] /path/File.java:[line,col] <message>`, check whether that file and line number appear in the added-line set from step 6. Only report warnings that match. This avoids surfacing pre-existing warnings when a contributor edits a file that already has them.
 
@@ -120,11 +137,11 @@ Knowing this matters for diagnosing failures:
 
 ## Notes
 
-- Always use `./mvnw`, never a system `mvn`. The repo's CLAUDE.md is explicit on this.
-- Don't pass `-am` for steps 1–5 — that builds upstream dependencies too, which defeats the purpose of scoping. Only step 7 (compile) needs `-am` because javac needs dependency jars on the classpath.
+- Prefer `mvnd`/`mvnd2` over `./mvnw` for faster daemon-backed builds. Use `./mvnw` when no daemon is installed; avoid bare `mvn` unless `./mvnw` is also missing. See step 7 for the full tool selection logic.
+- Don't pass `-am` for steps 1–4 — that builds upstream dependencies too, which defeats the purpose of scoping. Step 7 (compile) needs `-am` only with Maven 3; with Maven 4, upstream deps are resolved automatically.
 - Run sequentially, not in parallel. Spotless and license:format may both modify the same files; ordering matters.
 - When `spotless:apply` removes an unused import, it leaves a *leftover blank line* where the import used to be. This is harmless (checkstyle does not flag it), but if the user cares about the cosmetic double-blank, they'll need to hand-clean after the skill runs. Mention this in the report if spotless touched any files.
 - If the user says `/precommit all`, run on the whole repo (no `-pl`). Warn that this is slow (several minutes).
-- Long builds: steps 1–5 are fast (<30s warm). Step 7 (test-compile with `-am`) is slower (~7–90s depending on module depth and Maven cache state). Deep modules with many upstream deps may take longer on a cold cache. Use `run_in_background` only if the user explicitly asks — otherwise show progress inline.
+- Long builds: steps 1–4 are fast (<30s warm). Step 7 (test-compile) is slower (~7–90s depending on module depth, Maven version, and Maven cache state). Maven 4 can be significantly faster on deep modules because it doesn't need to rebuild all upstream modules sequentially. Use `run_in_background` only if the user explicitly asks — otherwise show progress inline.
 - The `license:check` and `checkstyle:check` goals return Maven exit code `1` on violations. If you're capturing the output with shell chaining like `... | tail`, the *tail* pipeline's exit code will mask Maven's — always record Maven's exit code separately, e.g. with `set -o pipefail` or by capturing `${PIPESTATUS[0]}`.
 - The compiler warning filter (step 7) uses the added-line set from step 6, not just the changed-file list. This is critical — per-file filtering would surface pre-existing warnings in files the contributor merely edited, which is unfair. Per-line filtering ensures only warnings on newly added code are reported.
