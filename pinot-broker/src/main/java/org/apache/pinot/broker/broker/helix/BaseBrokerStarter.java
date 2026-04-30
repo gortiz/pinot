@@ -19,6 +19,7 @@
 package org.apache.pinot.broker.broker.helix;
 
 import com.google.common.base.Preconditions;
+import com.google.inject.Injector;
 import java.io.IOException;
 import java.net.InetAddress;
 import java.util.ArrayList;
@@ -62,6 +63,7 @@ import org.apache.pinot.broker.requesthandler.SingleConnectionBrokerRequestHandl
 import org.apache.pinot.broker.requesthandler.TimeSeriesRequestHandler;
 import org.apache.pinot.broker.routing.manager.BrokerRoutingManager;
 import org.apache.pinot.broker.routing.tablesampler.TableSamplerFactory;
+import org.apache.pinot.broker.runtime.PinotBrokerCoreModule;
 import org.apache.pinot.common.Utils;
 import org.apache.pinot.common.audit.AuditServiceBinder;
 import org.apache.pinot.common.config.DefaultClusterConfigChangeHandler;
@@ -79,6 +81,7 @@ import org.apache.pinot.common.metrics.BrokerGauge;
 import org.apache.pinot.common.metrics.BrokerMeter;
 import org.apache.pinot.common.metrics.BrokerMetrics;
 import org.apache.pinot.common.metrics.BrokerTimer;
+import org.apache.pinot.common.plugin.PinotInjectors;
 import org.apache.pinot.common.utils.PinotAppConfigs;
 import org.apache.pinot.common.utils.ServiceStartableUtils;
 import org.apache.pinot.common.utils.ServiceStatus;
@@ -98,6 +101,7 @@ import org.apache.pinot.core.transport.NettyInspector;
 import org.apache.pinot.core.transport.server.routing.stats.ServerRoutingStatsManager;
 import org.apache.pinot.core.util.ListenerConfigUtil;
 import org.apache.pinot.core.util.trace.ContinuousJfrStarter;
+import org.apache.pinot.query.planner.rules.PinotRuleSet;
 import org.apache.pinot.query.routing.WorkerManager;
 import org.apache.pinot.query.runtime.operator.factory.DefaultQueryOperatorFactoryProvider;
 import org.apache.pinot.query.runtime.operator.factory.QueryOperatorFactoryProvider;
@@ -189,6 +193,13 @@ public abstract class BaseBrokerStarter implements ServiceStartable {
   protected BrokerGrpcServer _brokerGrpcServer;
   protected FailureDetector _failureDetector;
   protected ThreadAccountant _threadAccountant;
+  /**
+   * Broker-wide Guice injector. Built lazily during {@link #start()} once the broker
+   * config and plugin classloaders are available; null before that. Subclasses
+   * extending the broker must not rebind types already bound by
+   * {@link PinotBrokerCoreModule}.
+   */
+  protected Injector _brokerInjector;
 
   @Override
   public void init(PinotConfiguration brokerConf)
@@ -304,10 +315,10 @@ public abstract class BaseBrokerStarter implements ServiceStartable {
       QueryQuotaManager queryQuotaManager, TableCache tableCache,
       MultiStageQueryThrottler multiStageQueryThrottler, FailureDetector failureDetector,
       ThreadAccountant threadAccountant, MultiClusterRoutingContext multiClusterRoutingContext,
-      WorkerManager workerManager, WorkerManager multiClusterWorkerManager) {
+      WorkerManager workerManager, WorkerManager multiClusterWorkerManager, PinotRuleSet ruleSet) {
     return new MultiStageBrokerRequestHandler(config, brokerId, requestIdGenerator, routingManager,
         accessControlFactory, queryQuotaManager, tableCache, multiStageQueryThrottler, failureDetector,
-        threadAccountant, multiClusterRoutingContext, workerManager, multiClusterWorkerManager);
+        threadAccountant, multiClusterRoutingContext, workerManager, multiClusterWorkerManager, ruleSet);
   }
 
   private void setupHelixSystemProperties() {
@@ -468,6 +479,13 @@ public abstract class BaseBrokerStarter implements ServiceStartable {
     // TODO: Hook multiClusterRoutingContext into request handlers subsequently.
     MultiClusterRoutingContext multiClusterRoutingContext = getMultiClusterRoutingContext();
 
+    // Build the broker-wide Guice injector. PinotBrokerCoreModule binds _brokerConf
+    // as PinotConfiguration plus broker-specific bindings (the Multibinder of
+    // RuleSetCustomizer, seeded with DefaultRuleSetCustomizer); plugins contribute
+    // additional bindings via Modules exposed as ServiceLoader entries on each
+    // plugin classloader.
+    _brokerInjector = PinotInjectors.createWithPluginModules(new PinotBrokerCoreModule(_brokerConf));
+
     // Create Broker request handler.
     String brokerId = _brokerConf.getProperty(Broker.CONFIG_OF_BROKER_ID, getDefaultBrokerId());
     BrokerRequestIdGenerator requestIdGenerator = new BrokerRequestIdGenerator();
@@ -526,7 +544,8 @@ public abstract class BaseBrokerStarter implements ServiceStartable {
       multiStageBrokerRequestHandler =
           createMultiStageBrokerRequestHandler(_brokerConf, brokerId, requestIdGenerator, _routingManager,
               _accessControlFactory, _queryQuotaManager, _tableCache, _multiStageQueryThrottler, _failureDetector,
-              _threadAccountant, multiClusterRoutingContext, workerManager, multiClusterWorkerManager);
+              _threadAccountant, multiClusterRoutingContext, workerManager, multiClusterWorkerManager,
+              _brokerInjector.getInstance(PinotRuleSet.class));
       MultiStageBrokerRequestHandler finalHandler = multiStageBrokerRequestHandler;
       _routingManager.setServerReenableCallback(
           serverInstance -> finalHandler.getQueryDispatcher().resetClientConnectionBackoff(serverInstance));

@@ -114,6 +114,21 @@ repo. It is intentionally short and focused on day-to-day work.
 - Prefer imports over fully qualified class names (e.g., use `import com.foo.Bar` and refer to `Bar`, not `com.foo.Bar` inline).
 - Prefer targeted unit tests; use integration tests when behavior crosses roles.
 
+### Dependency injection (Guice)
+Pinot is incrementally adopting Guice (broker first; server/controller/minion later).
+**Read `docs/dependency-injection.md` before adding Guice-related code.** Hard rules:
+
+- Constructor injection only — no field injection in production code, no setter injection.
+- Constructors must be side-effect-free; move global-state mutation / I/O / thread starts to an explicit `install...()` or `start()` method.
+- `@Singleton` is the only allowed scope. No request scope, no query scope, no custom scopes.
+- No AOP, no method interception, no proxies (`bindInterceptor` is forbidden).
+- `pinot-spi` stays Guice-free; SPI types live in their semantic module (`pinot-common`, `pinot-broker`, …).
+- Plugins contribute via a `Module` discovered through `ServiceLoader<Module>`. Plugins must not shade Guice; the broker exports `com.google.inject`, `jakarta.inject`, and `javax.inject` to plugin classloaders.
+- Operator config keys are permanent operational levers, not legacy. When a class needs operational config, route it through DI: bind `PinotConfiguration` into the injector and let the class `@Inject PinotConfiguration` to read it.
+- Multibinder iteration order is binding order; if order matters across plugins, add an explicit ordering hook on the SPI.
+
+Worked example: the multi-stage planner Calcite rule extension — `RuleSetCustomizer` SPI in `pinot-query-planner`, consumed by `PinotRuleSet` (`@Singleton`), seeded by `DefaultRuleSetCustomizer` (bound first in `PinotBrokerCoreModule`).
+
 ## Checkstyle config
 - Checkstyle rules and related config files live under `config/`.
 - Use the Maven wrapper (`./mvnw` on Unix-like systems or `mvnw.cmd` on Windows) to run `spotless:apply` to format code and `checkstyle:check` to validate style.
