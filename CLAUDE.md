@@ -113,6 +113,21 @@ Apache Pinot is a real-time distributed OLAP datastore for low-latency analytics
 - Prefer targeted unit tests; use integration tests when behavior crosses roles.
 - Avoid deprecated APIs in new code. If you must reference one (e.g., for backward-compat serialization or to test the deprecated path), justify it with a comment.
 
+### Dependency injection (Guice)
+Pinot is incrementally adopting Guice (broker first; server/controller/minion later).
+**Read `docs/dependency-injection.md` before adding any Guice-related code.** Hard rules:
+
+- **Constructor injection only.** No field injection in production code (`src/test` is fine if a framework requires it). No setter injection.
+- **Constructors must be side-effect-free.** Don't mutate global state, register with external services, or start threads from a constructor — Guice may instantiate the class multiple times in tests. Move side effects to an explicit `install...()` / `start()` method invoked once during bootstrap.
+- **`@Singleton` only.** No request scope, no query scope, no custom scopes. Pass per-query state through method parameters (`QueryContext`, `RequestContext`).
+- **No AOP, no method interception, no proxies.** Don't call `bindInterceptor`. Wrap collaborators with explicit decorator classes if cross-cutting behavior is needed.
+- **`pinot-spi` stays Guice-free.** SPI types live in their semantic module (`pinot-common`, `pinot-broker`, …); plugins depend on `pinot-spi` plus the module that owns the SPI they implement.
+- **Plugins contribute via `Module` discovered through `ServiceLoader<Module>`.** Plugins must not shade Guice — `com.google.inject`, `jakarta.inject`, and `javax.inject` are exported from the broker classloader so plugin Modules see the same `Class<?>` objects as the core.
+- **Operational config keys are first-class, not legacy.** Keys like `CONFIG_OF_BROKER_QUERY_REWRITER_CLASS_NAMES` are permanent operator levers — they let an operator hot-fix a buggy rule by editing config and restarting, without a binary release. When a class needs operational config, route it through DI: bind `PinotConfiguration` into the injector and let the class `@Inject PinotConfiguration` to read it.
+- **Multibinder iteration order is binding order.** Don't rely on incidental Set ordering; if order matters across plugins, add an explicit ordering hook.
+
+The canonical worked example is the multi-stage planner's Calcite rule extension: `RuleSetCustomizer` SPI + `PinotRuleSet` (consumes `Set<RuleSetCustomizer>`) + `DefaultRuleSetCustomizer` (owns and seeds every `Phase` with the OSS default rules, bound first in `PinotBrokerCoreModule`).
+
 ## Pre-commit checks
 Before pushing a commit, run the following checks on the affected modules and fix any failures:
 1. `./mvnw spotless:apply -pl <module>` — auto-format code.
