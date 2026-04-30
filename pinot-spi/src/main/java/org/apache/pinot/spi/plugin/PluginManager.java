@@ -34,9 +34,12 @@ import java.util.Collection;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Properties;
+import java.util.Set;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 import org.apache.commons.io.FileUtils;
@@ -139,7 +142,9 @@ public class PluginManager {
 
   PluginManager() {
     // For the shaded plugins
-    _registry = new HashMap<>();
+    // LinkedHashMap so plugin classloader iteration is stable for downstream
+    // consumers that walk plugins to discover services (e.g. Guice Modules).
+    _registry = new LinkedHashMap<>();
     _registry.put(new Plugin(DEFAULT_PLUGIN_NAME), createClassLoader(Collections.emptyList()));
 
     // for the new pinot plugins
@@ -264,7 +269,7 @@ public class PluginManager {
    * @param pluginName
    * @param directory the directory of one plugin
    */
-  public void load(String pluginName, File directory) {
+  public synchronized void load(String pluginName, File directory) {
     Path pluginPropertiesPath = directory.toPath().resolve(PINOUT_PLUGIN_PROPERTIES_FILE_NAME);
     if (Files.isRegularFile(pluginPropertiesPath)) {
       Properties pluginProperties = new Properties();
@@ -298,9 +303,16 @@ public class PluginManager {
 
         ClassRealm pinotRealm = _classWorld.getClassRealm(PINOT_REALMID);
 
-        // All packages to look up in pinot realm BEFORE itself
-        Stream<String> importedPinotPackages =
-            Stream.of("org.apache.pinot.spi"); // this works like a prefix, so ALL spi classes will be accessible
+        // All packages to look up in pinot realm BEFORE itself.
+        // Acts like a prefix so all classes in (and below) the listed packages are accessible.
+        // Guice and the standard inject-annotation namespaces are shared so plugin Modules
+        // bind against the same Class<?> objects as the broker injector — plugins must not
+        // shade Guice.
+        Stream<String> importedPinotPackages = Stream.of(
+            "org.apache.pinot.spi",
+            "com.google.inject",
+            "jakarta.inject",
+            "javax.inject");
         importedPinotPackages.forEach(p -> pluginRealm.importFrom(pinotRealm, p));
 
         // Additional importForm as specified by the plugin configuration
@@ -472,6 +484,28 @@ public class PluginManager {
       return _pluginsDirectories.split(";");
     }
     return null;
+  }
+
+  /**
+   * Returns a point-in-time snapshot of the classloaders backing every loaded plugin
+   * (excluding the shared default classloader). Iteration order follows plugin load
+   * order. Callers can use these to drive their own service discovery (e.g.
+   * {@link java.util.ServiceLoader#load(Class, ClassLoader)}) without coupling
+   * pinot-spi to the consumer's framework.
+   *
+   * <p>Intended to be called once at role startup after all plugins are loaded.
+   * The returned set is immutable; subsequent {@link #load(String, File)} calls
+   * are not reflected in previously returned snapshots.
+   */
+  public synchronized Set<ClassLoader> getPluginClassLoaders() {
+    Set<ClassLoader> classLoaders = new LinkedHashSet<>();
+    Plugin defaultPlugin = new Plugin(DEFAULT_PLUGIN_NAME);
+    for (Map.Entry<Plugin, PluginClassLoader> entry : _registry.entrySet()) {
+      if (!entry.getKey().equals(defaultPlugin)) {
+        classLoaders.add(entry.getValue());
+      }
+    }
+    return Collections.unmodifiableSet(classLoaders);
   }
 
   public static PluginManager get() {

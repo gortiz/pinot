@@ -18,12 +18,15 @@
  */
 package org.apache.pinot.query.planner.rules;
 
+import com.google.inject.Inject;
+import com.google.inject.Singleton;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.EnumMap;
 import java.util.List;
 import java.util.Map;
 import java.util.ServiceLoader;
+import java.util.Set;
 import org.apache.calcite.plan.RelOptRule;
 
 
@@ -35,17 +38,28 @@ import org.apache.calcite.plan.RelOptRule;
 /// 1. Allocate an empty mutable list per [Phase].
 /// 2. For every [RuleSetCustomizer] (in supplied order), call
 ///    `customize(phase, list)` once per phase. The OSS defaults are themselves
-///    contributed by [DefaultRuleSetCustomizer] which is registered as a
-///    `ServiceLoader` entry; plugin customizers run after and observe a list
-///    pre-populated with the OSS defaults.
+///    contributed by [DefaultRuleSetCustomizer]. In the broker, the customizer
+///    set is supplied by Guice (a `Multibinder<RuleSetCustomizer>` populated
+///    by `PinotBrokerCoreModule` and any plugin `Module`s); other callers can
+///    use [#loadFromServiceLoader()] to discover customizers via
+///    `META-INF/services`.
 /// 3. Defensively copy each per-phase list to an immutable [List] and freeze
 ///    the map.
 ///
 /// `QueryEnvironment` reads `rulesFor(phase)` and applies per-query
 /// `usePlannerRules` / `skipPlannerRules` filters on top.
+@Singleton
 public final class PinotRuleSet {
 
   private final Map<Phase, List<RelOptRule>> _rulesByPhase;
+
+  /// Guice constructor: customizers come from a `Multibinder<RuleSetCustomizer>`
+  /// declared in the broker's core module. Multibinder iteration order is the
+  /// binding order: OSS defaults (bound first) run before plugin contributions.
+  @Inject
+  public PinotRuleSet(Set<RuleSetCustomizer> customizers) {
+    this((Iterable<RuleSetCustomizer>) customizers);
+  }
 
   /// Builds a rule set from the supplied customizers. Customizers run in the
   /// order of the iterable; the framework freezes the per-phase lists after

@@ -31,6 +31,7 @@ import org.apache.pinot.common.metrics.BrokerMetrics;
 import org.apache.pinot.common.response.BrokerResponse;
 import org.apache.pinot.common.response.broker.BrokerResponseNativeV2;
 import org.apache.pinot.core.routing.RoutingManager;
+import org.apache.pinot.query.planner.rules.PinotRuleSet;
 import org.apache.pinot.query.routing.WorkerManager;
 import org.apache.pinot.spi.accounting.ThreadAccountantUtils;
 import org.apache.pinot.spi.auth.broker.RequesterIdentity;
@@ -73,7 +74,8 @@ public class MultiStageBrokerRequestHandlerTest {
         new MultiStageBrokerRequestHandler(config, "testBrokerId", new BrokerRequestIdGenerator(),
             mock(RoutingManager.class), new AllowAllAccessControlFactory(), queryQuotaManager,
             mock(TableCache.class), mock(MultiStageQueryThrottler.class), mock(FailureDetector.class),
-            ThreadAccountantUtils.getNoOpAccountant(), null, mock(WorkerManager.class), mock(WorkerManager.class)) {
+            ThreadAccountantUtils.getNoOpAccountant(), null, mock(WorkerManager.class), mock(WorkerManager.class),
+            PinotRuleSet.defaultInstance()) {
           @Override
           public void start() {
             // Skip dispatcher.start() and Calcite warmupCompile — neither is needed for this hook test.

@@ -29,6 +29,7 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.Callable;
 import java.util.concurrent.ExecutionException;
@@ -81,6 +82,7 @@ import org.apache.pinot.query.planner.explain.AskingServerStageExplainer;
 import org.apache.pinot.query.planner.physical.DispatchablePlanFragment;
 import org.apache.pinot.query.planner.physical.DispatchableSubPlan;
 import org.apache.pinot.query.planner.plannode.PlanNode;
+import org.apache.pinot.query.planner.rules.PinotRuleSet;
 import org.apache.pinot.query.routing.QueryServerInstance;
 import org.apache.pinot.query.routing.WorkerManager;
 import org.apache.pinot.query.runtime.MultiStageStatsTreeBuilder;
@@ -136,6 +138,7 @@ public class MultiStageBrokerRequestHandler extends BaseBrokerRequestHandler {
   private final MultiStageQueryThrottler _queryThrottler;
   private final ExecutorService _queryCompileExecutor;
   private final Set<String> _defaultDisabledPlannerRules;
+  private final PinotRuleSet _ruleSet;
   protected final long _extraPassiveTimeoutMs;
   protected final boolean _enableQueryFingerprinting;
 
@@ -149,9 +152,11 @@ public class MultiStageBrokerRequestHandler extends BaseBrokerRequestHandler {
       AccessControlFactory accessControlFactory, QueryQuotaManager queryQuotaManager, TableCache tableCache,
       MultiStageQueryThrottler queryThrottler, FailureDetector failureDetector, ThreadAccountant threadAccountant,
       MultiClusterRoutingContext multiClusterRoutingContext,
-      WorkerManager workerManager, WorkerManager multiClusterWorkerManager) {
+      WorkerManager workerManager, WorkerManager multiClusterWorkerManager,
+      PinotRuleSet ruleSet) {
     super(config, brokerId, requestIdGenerator, routingManager, accessControlFactory, queryQuotaManager, tableCache,
         threadAccountant, multiClusterRoutingContext);
+    _ruleSet = Objects.requireNonNull(ruleSet, "ruleSet");
     String hostname = config.getProperty(CommonConstants.MultiStageQueryRunner.KEY_OF_QUERY_RUNNER_HOSTNAME);
     int port = Integer.parseInt(config.getProperty(CommonConstants.MultiStageQueryRunner.KEY_OF_QUERY_RUNNER_PORT));
 
@@ -537,6 +542,7 @@ public class MultiStageBrokerRequestHandler extends BaseBrokerRequestHandler {
         .defaultHashFunction(defaultHashFunction)
         .defaultDisabledPlannerRules(_defaultDisabledPlannerRules)
         .defaultSortExchangeCopyLimit(sortExchangeCopyThreshold)
+        .ruleSet(_ruleSet)
         .build();
   }
 

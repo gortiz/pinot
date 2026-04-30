@@ -273,6 +273,7 @@
     <google.errorprone.version>2.49.0</google.errorprone.version>
     <google.j2objc.version>3.1</google.j2objc.version>
     <google.jsr305.version>3.0.2</google.jsr305.version>
+    <guice.version>7.0.0</guice.version>
 
     <!-- Configuration for Scala -->
     <scala-2.12.version>2.12.20</scala-2.12.version>
@@ -1480,6 +1481,19 @@
         <groupId>com.google.code.findbugs</groupId>
         <artifactId>jsr305</artifactId>
         <version>${google.jsr305.version}</version>
+      </dependency>
+
+      <!-- Guice for dependency injection. Pinned explicitly so Pinot is not
+           transitively dragged onto Hadoop's older Guice line. 7.0.0 is the
+           first release that exposes the jakarta.inject namespace; pairs with
+           our JDK 21 service code and JDK 11 SPI bytecode. PluginManager
+           exports com.google.inject and both jakarta.inject + javax.inject
+           into plugin classloaders so plugin Modules and the broker injector
+           bind against the same Class<?> objects. -->
+      <dependency>
+        <groupId>com.google.inject</groupId>
+        <artifactId>guice</artifactId>
+        <version>${guice.version}</version>
       </dependency>
 
       <!-- Hadoop -->
@@ -2992,6 +3006,9 @@
 
             <!-- Spark datasource register -->
             <exclude>**/org.apache.spark.sql.sources.DataSourceRegister</exclude>
+
+            <!-- ServiceLoader entries (plain text, single-line class names) -->
+            <exclude>**/src/main/resources/META-INF/services/**</exclude>
 
             <!-- Binary files -->
             <exclude>**/*.avro</exclude>
