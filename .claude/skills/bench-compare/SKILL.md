@@ -42,14 +42,27 @@ Usage:
 
 4. **Warn and confirm.** Benchmarks take real time. Inspect `--args` — if the user hasn't passed iteration controls, warn that the default suite can take hours to days and suggest a starter like `-wi 1 -i 2 -f 1 -r 5s -w 5s`. Print an estimate of the pair of runs (rough: a 5s-warmup × 5s-measurement × 1 fork run takes ~30–120s per `@Benchmark` method after the Pinot-side `@Setup` completes; `@Setup` alone can run for 1–10 minutes for benchmarks that build segments). Ask the user to confirm.
 
-5. **Build pinot-perf in a baseline worktree.** This avoids touching the working tree. First, select the build tool — check in order: `mvnd2` (Maven 4 daemon), `mvnd` (check `mvnd --version`; v2.x = Maven 4), `mvn4` (explicit Maven 4; use if mvnd is Maven 3 or absent), `./mvnw` (check version), `mvn` (last resort). Then:
+5. **Build pinot-perf in a baseline worktree.** This avoids touching the working tree. First, set `MVN` and `MVN_MAJOR`:
+   ```bash
+   if   command -v mvnd2 &>/dev/null; then MVN=mvnd2; MVN_MAJOR=4
+   elif command -v mvnd  &>/dev/null; then
+     _v=$(mvnd --version 2>/dev/null | grep -oE 'mvnd [0-9]+' | grep -oE '[0-9]+' | head -1)
+     MVN=mvnd; MVN_MAJOR=${_v:-3}
+     command -v mvn4 &>/dev/null && [ "${MVN_MAJOR}" -lt 4 ] && MVN=mvn4 && MVN_MAJOR=4
+   elif command -v mvn4  &>/dev/null; then MVN=mvn4;  MVN_MAJOR=4
+   elif [ -f ./mvnw ];                then MVN=./mvnw; MVN_MAJOR=$(./mvnw --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1 | cut -d. -f1)
+   else                                    MVN=mvn;    MVN_MAJOR=$(mvn --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1 | cut -d. -f1)
+   fi
    ```
+
+   Then build the baseline:
+   ```bash
    git worktree add /tmp/pinot-bench-baseline <baseline-ref>
 
-   # Maven 4 (mvnd2, mvnd v2.x, or mvn4 — no -am needed):
+   # Maven 4 (no -am needed — deps resolved automatically):
    (cd /tmp/pinot-bench-baseline && $MVN -pl pinot-perf package -DskipTests)
 
-   # Maven 3 (./mvnw or mvnd v1.x — requires -am):
+   # Maven 3 (requires -am to build upstream modules first):
    (cd /tmp/pinot-bench-baseline && $MVN -pl pinot-perf -am package -DskipTests)
    ```
    The package goal produces the jars, an appassembler-generated launcher (for ~21 blessed benchmark classes) at `pinot-perf/target/pinot-perf-pkg/bin/pinot-<BenchmarkClass>.sh`, and a fat `lib/` directory.
@@ -105,7 +118,7 @@ Usage:
 
 ## Notes
 
-- **Stale-jar trap is the #1 source of mysterious failures.** Pinot benchmarks that fail on a subsequent run of `/bench-compare` in the same repo almost always fail because of duplicate third-party jars in `pinot-perf/target/pinot-perf-pkg/lib/` — typically `zookeeper-X.jar` + `zookeeper-Y.jar` (or equivalent for helix, netty, guava) from different builds. The failure shows up as a deeply-wrapped `ZkTimeoutException: Unable to connect to zookeeper server within timeout: 1000` (or similar NoSuchMethodError swallowed into an infrastructure-looking error). First diagnostic when a second run fails: `ls pinot-perf/target/pinot-perf-pkg/lib/ | sort | awk -F- '{v=$NF; sub("\\.jar$","",v); k=$0; sub("-"v"\\.jar$","",k); print k}' | sort | uniq -d` to spot duplicates. The fix is always a clean rebuild: `$MVN -pl pinot-perf clean package -DskipTests` (add `-am` if using Maven 3), never `rm` individual jars.
+- **Stale-jar trap is the #1 source of mysterious failures.** Pinot benchmarks that fail on a subsequent run of `/bench-compare` in the same repo almost always fail because of duplicate third-party jars in `pinot-perf/target/pinot-perf-pkg/lib/` — typically `zookeeper-X.jar` + `zookeeper-Y.jar` (or equivalent for helix, netty, guava) from different builds. The failure shows up as a deeply-wrapped `ZkTimeoutException: Unable to connect to zookeeper server within timeout: 1000` (or similar NoSuchMethodError swallowed into an infrastructure-looking error). First diagnostic when a second run fails: `ls pinot-perf/target/pinot-perf-pkg/lib/ | sort | awk -F- '{v=$NF; sub("\\.jar$","",v); k=$0; sub("-"v"\\.jar$","",k); print k}' | sort | uniq -d` to spot duplicates. The fix is always a clean rebuild using the detected `$MVN` from step 5 (e.g. `mvnd -pl pinot-perf clean package -DskipTests` for Maven 4, or `./mvnw -pl pinot-perf clean package -DskipTests -am` for Maven 3), never `rm` individual jars.
 - Worktrees require a clean `.git`. If the repo is in the middle of a rebase/merge, abort with a clear message.
 - **JDK 21 needs the full `--add-opens` / `--add-exports` flag set** for any cluster-backed benchmark (extends `BaseClusterIntegrationTest`). Without them, ZK startup fails with `InaccessibleObjectException: ... module java.base does not "opens java.lang"`. Pass via `-jvmArgsAppend=...` to `org.openjdk.jmh.Main`; CI's `pinot_tests.yml` has the canonical list.
 - **The generated `pinot-<BenchmarkClass>.sh` scripts hard-code `-Xms24G -Xmx24G`.** Avoid them — use `java -cp 'lib/*' org.openjdk.jmh.Main <FQN>` directly with your own `-Xmx`.

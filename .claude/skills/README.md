@@ -75,7 +75,7 @@ Skills are plain Markdown with YAML frontmatter — Claude reads them and follow
 
 ## `/run-test`
 
-**What it does.** Given a test class name (or `Class#method`), finds the source file via glob, walks up to the owning module, detects the best Maven executor (`mvnd2` → `mvnd` → `mvn4` → `./mvnw` → `mvn`) and Maven version, then builds the correct command: `$MVN -pl <module> [-am if Maven 3] -Dtest=<Class>[#<method>] -Dsurefire.failIfNoSpecifiedTests=false test`.
+**What it does.** Given a test class name (or `Class#method`), finds the source file via glob, walks up to the owning module, detects the best Maven executor (`mvnd2` → `mvnd` → `mvn4` → `./mvnw` → `mvn`) and Maven version, then builds the correct command using that executor — with `-am` on Maven 3, without it on Maven 4.
 
 **Why `-Dsurefire.failIfNoSpecifiedTests=false` is always included:** with Maven 3 + `-am`, Maven builds upstream modules and runs Surefire in each one. Upstream modules don't have the target test, so Surefire's default behaviour (fail when the `-Dtest` filter matches nothing) kills the build at the first upstream module. The flag makes "no tests matched in this module" a no-op and lets the build progress to the module that actually contains the test. With Maven 4 (no `-am`), this issue doesn't arise, but the flag is harmless to include.
 
@@ -83,7 +83,7 @@ Skills are plain Markdown with YAML frontmatter — Claude reads them and follow
 
 **Example scenarios:**
 
-- **Unit test** → `/run-test BigDecimalUtilsTest` → resolves to `pinot-spi/src/test/java/.../BigDecimalUtilsTest.java` → runs `$MVN -pl pinot-spi [-am if Maven 3] -Dtest=BigDecimalUtilsTest test`. Verified: 5 tests pass in ~6s after the dependency build.
+- **Unit test** → `/run-test BigDecimalUtilsTest` → resolves to `pinot-spi/src/test/java/.../BigDecimalUtilsTest.java` → runs e.g. `mvnd -pl pinot-spi -Dtest=BigDecimalUtilsTest test` (Maven 4) or `./mvnw -pl pinot-spi -am -Dtest=BigDecimalUtilsTest test` (Maven 3). Verified: 5 tests pass in ~6s after the dependency build.
 - **Integration test** → `/run-test OfflineClusterIntegrationTest` → path `pinot-integration-tests/...` triggers integration detection → adds `-Dsurefire.failIfNoSpecifiedTests=false`. Runs for 10–20 minutes depending on the test.
 - **Method selector** → `/run-test BigDecimalUtilsTest#testRoundTrip` → Maven's `-Dtest=Class#method` form.
 - **Ambiguous name** → `/run-test AggregationFunctionColumnPairTest` → matches two files in `pinot-segment-spi` (`.../misc/` and `.../index/startree/`). Skill lists both with their package paths and asks the user to pick. Does not guess.
@@ -149,7 +149,7 @@ Why `org.openjdk.jmh.Main` instead of the per-benchmark `pinot-<Class>.sh`:
 
 **Known quirks:**
 
-- **Stale-jar trap (the real failure mode).** If the current tree's `pinot-perf/target/pinot-perf-pkg/lib/` was built from a previous ref that pulled in different versions of a transitive dep (e.g. `zookeeper-3.9.4.jar` + `zookeeper-3.9.5.jar`), the classpath glob loads both and you get `NoSuchMethodError` at runtime. Pinot/Helix often swallows this as `ZkTimeoutException: Unable to connect to zookeeper server within timeout: 1000`, which looks like an infrastructure/timing issue but is actually a classpath bug. The skill defends against this by always using `$MVN -pl pinot-perf clean package -DskipTests` (add `-am` with Maven 3) on the current tree (the worktree is a fresh checkout so baseline is immune). **If you see `ZkTimeoutException` in a second run, don't tune timeouts — check `lib/` for version duplicates.**
+- **Stale-jar trap (the real failure mode).** If the current tree's `pinot-perf/target/pinot-perf-pkg/lib/` was built from a previous ref that pulled in different versions of a transitive dep (e.g. `zookeeper-3.9.4.jar` + `zookeeper-3.9.5.jar`), the classpath glob loads both and you get `NoSuchMethodError` at runtime. Pinot/Helix often swallows this as `ZkTimeoutException: Unable to connect to zookeeper server within timeout: 1000`, which looks like an infrastructure/timing issue but is actually a classpath bug. The skill defends against this by always running a clean rebuild on the current tree (e.g. `mvnd -pl pinot-perf clean package -DskipTests` for Maven 4, or `./mvnw -pl pinot-perf clean package -DskipTests -am` for Maven 3); the worktree is a fresh checkout so baseline is immune. **If you see `ZkTimeoutException` in a second run, don't tune timeouts — check `lib/` for version duplicates.**
 - JMH's `-l` flag doesn't help — Pinot benchmark classes have custom `main()` methods that ignore CLI args. There is no fast sanity check; the first real run is also the first verification.
 - The generated `pinot-<Class>.sh` scripts hard-code `-Xms24G -Xmx24G`. Avoid them; use the `java -cp 'lib/*'` form with your own `-Xmx`.
 - Only ~21 of ~60 benchmark classes are configured as appassembler programs — not every benchmark has a `.sh`. Direct `java -cp` works for all of them.

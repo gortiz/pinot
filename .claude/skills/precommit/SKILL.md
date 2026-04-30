@@ -63,22 +63,28 @@ Steps 1 and 2 are auto-fixers. Steps 3 and 4 are validators — if they fail aft
 
 6. **Build the added-line set for compiler warning filtering.** This runs after the auto-fixers so that line numbers reflect the post-fix state (spotless may remove imports, shifting line numbers). Run `git diff --unified=0 HEAD -- <changed .java files>` and parse the `@@` hunk headers to extract the added line ranges. Build a map of `file → set of added line numbers`. For untracked `.java` files (new files not yet in git), `git diff` returns nothing — treat all lines as added (use `wc -l` to get the line count and add 1 through N to the set).
 
-7. **Run the compiler check.** First, select the build tool and detect the Maven version (check in this order):
-   - `mvnd2` present → use it (`MVN=mvnd2`, `MVN_MAJOR=4`)
-   - `mvnd` present → run `mvnd --version`; if `mvnd 2.x.x` then `MVN_MAJOR=4`, else `MVN_MAJOR=3`. If `MVN_MAJOR=3` and `mvn4` is also present, switch to `mvn4` for Maven 4 features.
-   - `mvn4` present (and no daemon) → `MVN=mvn4`, `MVN_MAJOR=4`
-   - `./mvnw` present → `MVN=./mvnw`; extract major from `./mvnw --version`
-   - fallback → `MVN=mvn`; extract major from `mvn --version`
+7. **Run the compiler check.** First, set `MVN` and `MVN_MAJOR` by running this detection block:
+   ```bash
+   if   command -v mvnd2 &>/dev/null; then MVN=mvnd2; MVN_MAJOR=4
+   elif command -v mvnd  &>/dev/null; then
+     _v=$(mvnd --version 2>/dev/null | grep -oE 'mvnd [0-9]+' | grep -oE '[0-9]+' | head -1)
+     MVN=mvnd; MVN_MAJOR=${_v:-3}
+     command -v mvn4 &>/dev/null && [ "${MVN_MAJOR}" -lt 4 ] && MVN=mvn4 && MVN_MAJOR=4
+   elif command -v mvn4  &>/dev/null; then MVN=mvn4;  MVN_MAJOR=4
+   elif [ -f ./mvnw ];                then MVN=./mvnw; MVN_MAJOR=$(./mvnw --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1 | cut -d. -f1)
+   else                                    MVN=mvn;    MVN_MAJOR=$(mvn --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1 | cut -d. -f1)
+   fi
+   ```
 
    Then run the appropriate form:
 
-   **Maven 4** (deps resolved automatically, no `-am`):
-   ```
+   **Maven 4** (`MVN_MAJOR=4` — deps resolved automatically, no `-am`):
+   ```bash
    $MVN test-compile -pl <modules> -Dmaven.compiler.showDeprecation=true -Dmaven.compiler.showWarnings=true '-Dmaven.compiler.compilerArgs=-Xlint:all'
    ```
 
-   **Maven 3** (`-am` required — compilation needs upstream dependency JARs on the classpath):
-   ```
+   **Maven 3** (`MVN_MAJOR=3` — `-am` required; compilation needs upstream dependency JARs on the classpath):
+   ```bash
    $MVN test-compile -pl <modules> -am -Dmaven.compiler.showDeprecation=true -Dmaven.compiler.showWarnings=true '-Dmaven.compiler.compilerArgs=-Xlint:all'
    ```
 
