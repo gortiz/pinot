@@ -25,9 +25,15 @@ import java.lang.reflect.Field;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.net.URL;
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 import java.util.jar.JarEntry;
 import java.util.jar.JarOutputStream;
 import javax.tools.JavaCompiler;
@@ -458,6 +464,181 @@ public class PluginManagerTest {
       Throwable cause = ite.getCause();
       Assert.assertTrue(cause instanceof ClassNotFoundException,
           "Expected ClassNotFoundException but got " + cause.getClass().getName() + ": " + cause.getMessage());
+    }
+  }
+
+  // A1: load() must be synchronized — concurrent load() and loadServices() must not throw
+  // ConcurrentModificationException or otherwise corrupt state.
+  // Stresses the monitor that guards _registry and _classWorld: writer threads call load() (which
+  // takes the realm-creating path because the plugin dir has a pinot-plugin.properties, so it calls
+  // _classWorld.newRealm(...)) while reader threads concurrently walk those structures via
+  // loadServices, the DEFAULT realm-walk loadClass, and the explicit-pluginName loadClass. Without
+  // the synchronization on load() and on both reader paths, this surfaces as
+  // ConcurrentModificationException / NPE / corrupted-map reads rather than a benign
+  // ClassNotFoundException. ClassNotFoundException is an accepted outcome (a realm may not be
+  // registered yet); anything else fails the test.
+  @Test
+  public void testConcurrentLoadAndLoadServices()
+      throws Exception {
+    PluginManager pm = new PluginManager();
+
+    // A plugin dir with a pinot-plugin.properties forces load() onto the realm-creating path.
+    File realmDir = new File(_tempDir, "concurrent-realm-dir");
+    realmDir.mkdirs();
+    FileUtils.write(new File(realmDir, "pinot-plugin.properties"), "parent.realmId=pinot\n",
+        java.nio.charset.StandardCharsets.UTF_8);
+
+    int writerThreads = 3;
+    int readerThreads = 3;
+    int realmsPerWriter = 25;
+    int readerIterations = 200;
+    CountDownLatch startLatch = new CountDownLatch(1);
+    ExecutorService executor = Executors.newFixedThreadPool(writerThreads + readerThreads);
+    List<Future<?>> futures = new ArrayList<>(writerThreads + readerThreads);
+
+    for (int w = 0; w < writerThreads; w++) {
+      final int writerId = w;
+      futures.add(executor.submit(() -> {
+        startLatch.await();
+        for (int k = 0; k < realmsPerWriter; k++) {
+          // Distinct realm names so DuplicateRealmException is never triggered; each call mutates
+          // _classWorld and _registry under the monitor.
+          pm.load("concurrent-realm-" + writerId + "-" + k, realmDir);
+        }
+        return null;
+      }));
+    }
+
+    for (int r = 0; r < readerThreads; r++) {
+      futures.add(executor.submit(() -> {
+        startLatch.await();
+        for (int k = 0; k < readerIterations; k++) {
+          pm.loadServices(Runnable.class);
+          pm.loadClass(PluginManager.DEFAULT_PLUGIN_NAME, "java.lang.String");
+          try {
+            // Explicit-pluginName reader path; the realm may or may not exist yet.
+            pm.loadClass("concurrent-realm-0-0", "java.lang.String");
+          } catch (ClassNotFoundException expected) {
+            // Acceptable: the realm has not been registered yet. Not a race failure.
+          }
+        }
+        return null;
+      }));
+    }
+
+    startLatch.countDown();
+    executor.shutdown();
+    Assert.assertTrue(executor.awaitTermination(15, TimeUnit.SECONDS), "Threads did not finish in time");
+
+    for (Future<?> f : futures) {
+      f.get(); // rethrows any exception thrown inside the task (a data race surfaces here)
+    }
+  }
+
+  // A2: when a classloader throws NoClassDefFoundError during the realm walk, the terminal
+  // ClassNotFoundException must (a) have the NCDFE as a suppressed exception and (b) name
+  // the classloaders searched in its message.
+  @Test
+  public void testLoadClassFromAnyPluginAttachesNcdfeSuppressed()
+      throws Exception {
+    PluginManager pm = new PluginManager();
+
+    NoClassDefFoundError simulatedNcdfe = new NoClassDefFoundError("com/example/MissingDep");
+    PluginClassLoader ncdfeLoader = new PluginClassLoader(new URL[0], null) {
+      @Override
+      protected Class<?> loadClass(String name, boolean resolve) throws ClassNotFoundException {
+        throw simulatedNcdfe;
+      }
+    };
+
+    Field registryField = PluginManager.class.getDeclaredField("_registry");
+    registryField.setAccessible(true);
+    @SuppressWarnings("unchecked")
+    Map<Plugin, PluginClassLoader> registry = (Map<Plugin, PluginClassLoader>) registryField.get(pm);
+    registry.put(new Plugin("ncdfe-plugin"), ncdfeLoader);
+
+    Method method = PluginManager.class.getDeclaredMethod("loadClassFromAnyPlugin", String.class);
+    method.setAccessible(true);
+    try {
+      method.invoke(pm, "com.example.ClassWithMissingDep");
+      Assert.fail("Expected ClassNotFoundException");
+    } catch (InvocationTargetException ite) {
+      Throwable cause = ite.getCause();
+      Assert.assertTrue(cause instanceof ClassNotFoundException,
+          "Expected ClassNotFoundException but got: " + cause);
+      // Message must name the classloaders searched
+      Assert.assertTrue(cause.getMessage().contains("classloader"),
+          "CNFE message should name searched classloaders: " + cause.getMessage());
+      // NCDFE must be present as a suppressed exception
+      Throwable[] suppressed = cause.getSuppressed();
+      Assert.assertTrue(suppressed.length > 0, "Expected at least one suppressed exception");
+      boolean foundNcdfe = false;
+      for (Throwable t : suppressed) {
+        if (t instanceof NoClassDefFoundError) {
+          foundNcdfe = true;
+          break;
+        }
+      }
+      Assert.assertTrue(foundNcdfe, "Expected NoClassDefFoundError among suppressed exceptions");
+    }
+  }
+
+  // A2 (public path): the same NCDFE diagnostics must be visible through the public
+  // loadClass(DEFAULT_PLUGIN_NAME, name) entry point that callers actually use, not just via the
+  // private realm-walk method.
+  @Test
+  public void testLoadClassDefaultPluginAttachesNcdfeSuppressed()
+      throws Exception {
+    PluginManager pm = new PluginManager();
+
+    NoClassDefFoundError simulatedNcdfe = new NoClassDefFoundError("com/example/MissingDep");
+    PluginClassLoader ncdfeLoader = new PluginClassLoader(new URL[0], null) {
+      @Override
+      protected Class<?> loadClass(String name, boolean resolve) throws ClassNotFoundException {
+        throw simulatedNcdfe;
+      }
+    };
+
+    Field registryField = PluginManager.class.getDeclaredField("_registry");
+    registryField.setAccessible(true);
+    @SuppressWarnings("unchecked")
+    Map<Plugin, PluginClassLoader> registry = (Map<Plugin, PluginClassLoader>) registryField.get(pm);
+    registry.put(new Plugin("ncdfe-plugin"), ncdfeLoader);
+
+    try {
+      pm.loadClass(PluginManager.DEFAULT_PLUGIN_NAME, "com.example.ClassWithMissingDep");
+      Assert.fail("Expected ClassNotFoundException");
+    } catch (ClassNotFoundException cnfe) {
+      boolean foundNcdfe = false;
+      for (Throwable t : cnfe.getSuppressed()) {
+        if (t instanceof NoClassDefFoundError) {
+          foundNcdfe = true;
+          break;
+        }
+      }
+      Assert.assertTrue(foundNcdfe,
+          "Expected NoClassDefFoundError among suppressed exceptions on the public loadClass path");
+    }
+  }
+
+  // A3: loadClass(unknownPlugin, className) must throw ClassNotFoundException with a message
+  // that names the missing realm/plugin and lists available realm names.
+  @Test
+  public void testLoadClassUnknownPluginNameHasHelpfulMessage()
+      throws Exception {
+    PluginManager pm = new PluginManager();
+    String unknownPlugin = "no-such-plugin-xyz";
+    try {
+      pm.loadClass(unknownPlugin, "com.example.Foo");
+      Assert.fail("Expected ClassNotFoundException");
+    } catch (ClassNotFoundException e) {
+      String msg = e.getMessage();
+      Assert.assertNotNull(msg, "ClassNotFoundException message must not be null");
+      Assert.assertTrue(msg.contains(unknownPlugin),
+          "Message should name the missing realm '" + unknownPlugin + "': " + msg);
+      // Message should also list available realms so the operator knows what IS registered
+      Assert.assertTrue(msg.contains("Available realms") || msg.contains("realm"),
+          "Message should mention available realms: " + msg);
     }
   }
 

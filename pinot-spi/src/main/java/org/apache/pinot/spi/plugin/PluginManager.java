@@ -43,10 +43,12 @@ import java.util.Properties;
 import java.util.ServiceConfigurationError;
 import java.util.ServiceLoader;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.jar.JarEntry;
 import java.util.jar.JarFile;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
+import javax.annotation.Nullable;
 import org.apache.commons.io.FileUtils;
 import org.apache.commons.lang3.StringUtils;
 import org.codehaus.plexus.classworlds.ClassWorld;
@@ -66,53 +68,56 @@ public class PluginManager {
   private static final String JAR_FILE_EXTENSION = "jar";
   private static final PluginManager PLUGIN_MANAGER = new PluginManager();
   private static final String PINOT_REALMID = "pinot";
-  private static final String PINOUT_PLUGIN_PROPERTIES_FILE_NAME = "pinot-plugin.properties";
+  private static final String PINOT_PLUGIN_PROPERTIES_FILE_NAME = "pinot-plugin.properties";
 
   // For backward compatibility, this map holds a mapping from old plugins class name to its new class name.
-  private static final Map<String, String> PLUGINS_BACKWARD_COMPATIBLE_CLASS_NAME_MAP = new HashMap<String, String>() {
-    {
-      // MessageDecoder
-      put("org.apache.pinot.core.realtime.stream.SimpleAvroMessageDecoder",
-          "org.apache.pinot.plugin.inputformat.avro.SimpleAvroMessageDecoder");
-      put("org.apache.pinot.core.realtime.impl.kafka.KafkaAvroMessageDecoder",
-          "org.apache.pinot.plugin.inputformat.avro.KafkaAvroMessageDecoder");
-      put("org.apache.pinot.core.realtime.impl.kafka.KafkaJSONMessageDecoder",
-          "org.apache.pinot.plugin.stream.kafka.KafkaJSONMessageDecoder");
+  // ConcurrentHashMap: registerBackwardCompatibleClassName is public and may be called from multiple threads
+  // concurrently with loadClassWithBackwardCompatibleCheck.
+  private static final Map<String, String> PLUGINS_BACKWARD_COMPATIBLE_CLASS_NAME_MAP = new ConcurrentHashMap<>();
 
-      // RecordReader
-      put("org.apache.pinot.core.data.readers.AvroRecordReader",
-          "org.apache.pinot.plugin.inputformat.avro.AvroRecordReader");
-      put("org.apache.pinot.core.data.readers.CSVRecordReader",
-          "org.apache.pinot.plugin.inputformat.csv.CSVRecordReader");
-      put("org.apache.pinot.core.data.readers.JSONRecordReader",
-          "org.apache.pinot.plugin.inputformat.json.JSONRecordReader");
-      put("org.apache.pinot.plugin.inputformat.json.JsonRecordReader",
-          "org.apache.pinot.plugin.inputformat.json.JSONRecordReader");
-      put("org.apache.pinot.orc.data.readers.ORCRecordReader",
-          "org.apache.pinot.plugin.inputformat.orc.ORCRecordReader");
-      put("org.apache.pinot.plugin.inputformat.orc.OrcRecordReader",
-          "org.apache.pinot.plugin.inputformat.orc.ORCRecordReader");
-      put("org.apache.pinot.parquet.data.readers.ParquetRecordReader",
-          "org.apache.pinot.plugin.inputformat.parquet.ParquetRecordReader");
-      put("org.apache.pinot.core.data.readers.ThriftRecordReader",
-          "org.apache.pinot.plugin.inputformat.thrift.ThriftRecordReader");
+  static {
+    Map<String, String> m = PLUGINS_BACKWARD_COMPATIBLE_CLASS_NAME_MAP;
+    // MessageDecoder
+    m.put("org.apache.pinot.core.realtime.stream.SimpleAvroMessageDecoder",
+        "org.apache.pinot.plugin.inputformat.avro.SimpleAvroMessageDecoder");
+    m.put("org.apache.pinot.core.realtime.impl.kafka.KafkaAvroMessageDecoder",
+        "org.apache.pinot.plugin.inputformat.avro.KafkaAvroMessageDecoder");
+    m.put("org.apache.pinot.core.realtime.impl.kafka.KafkaJSONMessageDecoder",
+        "org.apache.pinot.plugin.stream.kafka.KafkaJSONMessageDecoder");
 
-      // PinotFS
-      put("org.apache.pinot.filesystem.AzurePinotFS", "org.apache.pinot.plugin.filesystem.AzurePinotFS");
-      put("org.apache.pinot.filesystem.HadoopPinotFS", "org.apache.pinot.plugin.filesystem.HadoopPinotFS");
-      put("org.apache.pinot.filesystem.LocalPinotFS", "org.apache.pinot.spi.filesystem.LocalPinotFS");
+    // RecordReader
+    m.put("org.apache.pinot.core.data.readers.AvroRecordReader",
+        "org.apache.pinot.plugin.inputformat.avro.AvroRecordReader");
+    m.put("org.apache.pinot.core.data.readers.CSVRecordReader",
+        "org.apache.pinot.plugin.inputformat.csv.CSVRecordReader");
+    m.put("org.apache.pinot.core.data.readers.JSONRecordReader",
+        "org.apache.pinot.plugin.inputformat.json.JSONRecordReader");
+    m.put("org.apache.pinot.plugin.inputformat.json.JsonRecordReader",
+        "org.apache.pinot.plugin.inputformat.json.JSONRecordReader");
+    m.put("org.apache.pinot.orc.data.readers.ORCRecordReader",
+        "org.apache.pinot.plugin.inputformat.orc.ORCRecordReader");
+    m.put("org.apache.pinot.plugin.inputformat.orc.OrcRecordReader",
+        "org.apache.pinot.plugin.inputformat.orc.ORCRecordReader");
+    m.put("org.apache.pinot.parquet.data.readers.ParquetRecordReader",
+        "org.apache.pinot.plugin.inputformat.parquet.ParquetRecordReader");
+    m.put("org.apache.pinot.core.data.readers.ThriftRecordReader",
+        "org.apache.pinot.plugin.inputformat.thrift.ThriftRecordReader");
 
-      // StreamConsumerFactory
-      // Old-style class names mapped to current plugin packages
-      // Rename the usage of kafka 2 to kafka 3
-      put("org.apache.pinot.core.realtime.impl.kafka2.KafkaConsumerFactory",
-          "org.apache.pinot.plugin.stream.kafka30.KafkaConsumerFactory");
-      put("org.apache.pinot.plugin.stream.kafka20.KafkaConsumerFactory",
-          "org.apache.pinot.plugin.stream.kafka30.KafkaConsumerFactory");
-      put("org.apache.pinot.core.realtime.impl.kafka3.KafkaConsumerFactory",
-          "org.apache.pinot.plugin.stream.kafka30.KafkaConsumerFactory");
-    }
-  };
+    // PinotFS
+    m.put("org.apache.pinot.filesystem.AzurePinotFS", "org.apache.pinot.plugin.filesystem.AzurePinotFS");
+    m.put("org.apache.pinot.filesystem.HadoopPinotFS", "org.apache.pinot.plugin.filesystem.HadoopPinotFS");
+    m.put("org.apache.pinot.filesystem.LocalPinotFS", "org.apache.pinot.spi.filesystem.LocalPinotFS");
+
+    // StreamConsumerFactory
+    // Old-style class names mapped to current plugin packages
+    // Rename the usage of kafka 2 to kafka 3
+    m.put("org.apache.pinot.core.realtime.impl.kafka2.KafkaConsumerFactory",
+        "org.apache.pinot.plugin.stream.kafka30.KafkaConsumerFactory");
+    m.put("org.apache.pinot.plugin.stream.kafka20.KafkaConsumerFactory",
+        "org.apache.pinot.plugin.stream.kafka30.KafkaConsumerFactory");
+    m.put("org.apache.pinot.core.realtime.impl.kafka3.KafkaConsumerFactory",
+        "org.apache.pinot.plugin.stream.kafka30.KafkaConsumerFactory");
+  }
 
   private static final Map<String, String> INPUT_FORMAT_TO_RECORD_READER_CLASS_NAME_MAP =
       new HashMap<String, String>() {
@@ -268,11 +273,15 @@ public class PluginManager {
   }
 
   /**
-   * Loads jars recursively
-   * @param pluginName
+   * Loads jars recursively.
+   *
+   * <p>Synchronized to prevent races with {@link #loadClassFromAnyPlugin} and {@link #loadServices},
+   * both of which snapshot {@code _registry} and {@code _classWorld} under the same monitor.</p>
+   *
+   * @param pluginName the plugin to load
    * @param directory the directory of one plugin
    */
-  public void load(String pluginName, File directory) {
+  public synchronized void load(String pluginName, File directory) {
     PinotPluginConfiguration config = readPluginConfiguration(directory);
     if (config != null) {
       final ClassLoader baseClassLoader = ClassLoader.getPlatformClassLoader();
@@ -316,7 +325,10 @@ public class PluginManager {
         // parentClassLoader is AFTER self classloader
         config.getParentRealmId().map(_classWorld::getClassRealm).ifPresent(pluginRealm::setParentRealm);
       } catch (DuplicateRealmException e) {
-        throw new RuntimeException(e);
+        throw new RuntimeException(
+            "Failed to register realm for plugin '" + pluginName + "': a realm with that name already exists. "
+                + "Note: '" + DEFAULT_PLUGIN_NAME + "' and '" + PINOT_REALMID + "' are reserved realm names. "
+                + "Two plugin directories with the same name are not allowed.", e);
       }
       LOGGER.info("Successfully loaded plugin [{}] from jar files: {}", pluginName, Arrays.toString(urlList.toArray()));
     } else {
@@ -350,7 +362,7 @@ public class PluginManager {
   /// Returns {@code null} when neither lookup turns up the file — the caller falls back to the
   /// legacy {@link PluginClassLoader} path.
   private PinotPluginConfiguration readPluginConfiguration(File directory) {
-    Path pluginPropertiesPath = directory.toPath().resolve(PINOUT_PLUGIN_PROPERTIES_FILE_NAME);
+    Path pluginPropertiesPath = directory.toPath().resolve(PINOT_PLUGIN_PROPERTIES_FILE_NAME);
     if (Files.isRegularFile(pluginPropertiesPath)) {
       Properties pluginProperties = new Properties();
       try (Reader reader = Files.newBufferedReader(pluginPropertiesPath)) {
@@ -392,14 +404,14 @@ public class PluginManager {
 
   private PinotPluginConfiguration readPluginConfigurationFromJar(File jarFile) {
     try (JarFile jar = new JarFile(jarFile)) {
-      JarEntry entry = jar.getJarEntry(PINOUT_PLUGIN_PROPERTIES_FILE_NAME);
+      JarEntry entry = jar.getJarEntry(PINOT_PLUGIN_PROPERTIES_FILE_NAME);
       if (entry == null) {
         return null;
       }
       Properties pluginProperties = new Properties();
       try (InputStream in = jar.getInputStream(entry)) {
         pluginProperties.load(in);
-        LOGGER.info("Loaded plugin properties from {} entry of {}", PINOUT_PLUGIN_PROPERTIES_FILE_NAME, jarFile);
+        LOGGER.info("Loaded plugin properties from {} entry of {}", PINOT_PLUGIN_PROPERTIES_FILE_NAME, jarFile);
         return new PinotPluginConfiguration(pluginProperties);
       }
     } catch (IOException e) {
@@ -407,7 +419,7 @@ public class PluginManager {
       // plugin directory. Worst case we miss the properties file and the caller falls back to
       // the legacy PluginClassLoader path; the WARN message is the operator's signal.
       LOGGER.warn("Could not read {} from {} — falling back to legacy plugin loading if no other jar declares it.",
-          PINOUT_PLUGIN_PROPERTIES_FILE_NAME, jarFile, e);
+          PINOT_PLUGIN_PROPERTIES_FILE_NAME, jarFile, e);
       return null;
     }
   }
@@ -466,19 +478,41 @@ public class PluginManager {
    */
   public Class<?> loadClass(String pluginName, String className)
       throws ClassNotFoundException {
+    if (className == null) {
+      throw new ClassNotFoundException("Cannot load a null class name from plugin '" + pluginName + "'");
+    }
     String name = loadClassWithBackwardCompatibleCheck(className);
     if (DEFAULT_PLUGIN_NAME.equals(pluginName)) {
       return loadClassFromAnyPlugin(name);
     }
+    // Resolve the target classloader/realm under the monitor (consistent with load() and
+    // loadClassFromAnyPlugin, which mutate/read _registry and _classWorld under the same lock),
+    // then perform the actual class load outside the lock so classloading never holds the monitor.
     Plugin plugin = new Plugin(pluginName);
-    if (_registry.containsKey(plugin)) {
-      return _registry.get(plugin).loadClass(name, true);
+    PluginClassLoader pluginClassLoader;
+    ClassRealm realm = null;
+    synchronized (this) {
+      pluginClassLoader = _registry.get(plugin);
+      if (pluginClassLoader == null) {
+        try {
+          realm = _classWorld.getRealm(pluginName);
+        } catch (NoSuchRealmException e) {
+          List<String> realmNames = _classWorld.getRealms().stream()
+              .map(ClassRealm::getId)
+              .collect(Collectors.toList());
+          List<String> legacyPluginNames = _registry.keySet().stream()
+              .map(Plugin::toString)
+              .collect(Collectors.toList());
+          throw new ClassNotFoundException(
+              "Plugin (realm) '" + pluginName + "' not found. Available realms: " + realmNames
+                  + ". Available legacy plugin classloaders: " + legacyPluginNames, e);
+        }
+      }
     }
-    try {
-      return _classWorld.getRealm(pluginName).loadClass(name);
-    } catch (NoSuchRealmException e) {
-      throw new RuntimeException(e);
+    if (pluginClassLoader != null) {
+      return pluginClassLoader.loadClass(name, true);
     }
+    return realm.loadClass(name);
   }
 
   /// Walk-all-plugins fallback used when the caller did not pin a specific {@code pluginName}.
@@ -519,6 +553,10 @@ public class PluginManager {
     Class<?> firstHit = null;
     ClassLoader firstHitLoader = null;
     List<ClassLoader> additionalHitLoaders = null;
+    // Pairs of (classloader, NoClassDefFoundError) collected during the walk — the class
+    // bytecode was found but a transitive dependency could not be resolved, which is likely a
+    // packaging error (jar present but its dependency missing).
+    List<Map.Entry<ClassLoader, NoClassDefFoundError>> ncdfeEntries = null;
     for (ClassLoader cl : classLoaders) {
       try {
         Class<?> c = Class.forName(name, true, cl);
@@ -533,23 +571,54 @@ public class PluginManager {
         }
       } catch (ClassNotFoundException ignored) {
       } catch (NoClassDefFoundError e) {
-        // The class bytecode was found on this classloader but a dependency class could not be
-        // resolved (e.g. the plugin jar is on the system classpath but its native deps are not).
-        // Continue walking — a later classloader (e.g. the plugin's own realm) may have all deps.
-        LOGGER.debug("Skipping classloader {} for class {}: {}", cl, name, e.toString());
+        // The class bytecode was found on this classloader but a transitive dependency could not
+        // be resolved. This is most likely a packaging error: the plugin jar is present but one
+        // of its dependency jars is missing. Continue walking — a later classloader may have all
+        // dependencies available.
+        LOGGER.warn("Classloader {} found bytecode for class {} but could not resolve a transitive dependency "
+            + "(likely packaging error — jar present but its dependency missing): {}", cl, name, e.toString());
+        if (ncdfeEntries == null) {
+          ncdfeEntries = new ArrayList<>(2);
+        }
+        ncdfeEntries.add(Map.entry(cl, e));
       }
     }
     if (firstHit == null) {
-      throw new ClassNotFoundException(name);
+      ClassNotFoundException cnfe = new ClassNotFoundException(
+          "Class '" + name + "' not found on any of the " + classLoaders.size() + " classloader(s) searched: "
+              + classLoaders);
+      if (ncdfeEntries != null) {
+        for (Map.Entry<ClassLoader, NoClassDefFoundError> entry : ncdfeEntries) {
+          cnfe.addSuppressed(entry.getValue());
+        }
+      }
+      throw cnfe;
     }
     if (additionalHitLoaders != null) {
       LOGGER.warn("Class {} resolved on multiple plugin classloaders; using {} (also found on {}). "
               + "Use pluginName:className to disambiguate.", name, firstHitLoader, additionalHitLoaders);
     }
+    if (ncdfeEntries != null) {
+      // A same-named class was found on other classloader(s) but failed to fully load there because a
+      // transitive dependency was missing. We still return the hit above, but surface the masked failures
+      // so an operator can tell that the resolved class may not be the intended implementation.
+      List<ClassLoader> ncdfeLoaders = ncdfeEntries.stream()
+          .map(Map.Entry::getKey)
+          .collect(Collectors.toList());
+      LOGGER.warn("Class {} resolved from {}, but a same-named class failed to fully load on {} due to an "
+              + "unresolved transitive dependency (likely packaging error). If the intended implementation is "
+              + "one of those, use pluginName:className to disambiguate.", name, firstHitLoader, ncdfeLoaders);
+    }
     return firstHit;
   }
 
-  public static String loadClassWithBackwardCompatibleCheck(String className) {
+  /// Maps a (possibly legacy) class name to its current name, or returns the input unchanged when no
+  /// remapping applies. Null in, null out.
+  @Nullable
+  public static String loadClassWithBackwardCompatibleCheck(@Nullable String className) {
+    if (className == null) {
+      return null;
+    }
     return PLUGINS_BACKWARD_COMPATIBLE_CLASS_NAME_MAP.getOrDefault(className, className);
   }
 
@@ -697,8 +766,12 @@ public class PluginManager {
         LOGGER.warn("Skipping unloadable service for {} on classloader {}", iface.getName(), classLoader, e);
         continue;
       }
-      if (seenFqcns.add(impl.getClass().getName())) {
+      String fqcn = impl.getClass().getName();
+      if (seenFqcns.add(fqcn)) {
         results.add(impl);
+      } else {
+        LOGGER.debug("Skipping duplicate service implementation '{}' from classloader {} — "
+            + "an earlier classloader already provided this FQCN.", fqcn, classLoader);
       }
     }
   }

@@ -23,6 +23,7 @@ import com.google.common.collect.Sets;
 import java.util.Set;
 import org.apache.commons.lang3.StringUtils;
 import org.apache.pinot.spi.env.PinotConfiguration;
+import org.apache.pinot.spi.plugin.PluginManager;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -58,9 +59,8 @@ public class BrokerQueryEventListenerFactory {
         config.getProperty(CONFIG_OF_BROKER_EVENT_LISTENER_CLASS_NAME, DEFAULT_BROKER_EVENT_LISTENER_CLASS_NAME);
     LOGGER.info("Initializing BrokerQueryEventListener with class name: {}", brokerQueryEventListenerClassName);
     try {
-      _brokerQueryEventListener =
-          (BrokerQueryEventListener) Class.forName(brokerQueryEventListenerClassName).getDeclaredConstructor()
-              .newInstance();
+      _brokerQueryEventListener = (BrokerQueryEventListener) PluginManager.get()
+          .loadClass(brokerQueryEventListenerClassName).getDeclaredConstructor().newInstance();
       _brokerQueryEventListener.init(config);
     } catch (Exception e) {
       throw new RuntimeException(e);

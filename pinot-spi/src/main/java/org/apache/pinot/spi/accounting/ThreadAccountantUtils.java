@@ -26,6 +26,7 @@ import java.util.Map;
 import java.util.Set;
 import org.apache.pinot.spi.config.instance.InstanceType;
 import org.apache.pinot.spi.env.PinotConfiguration;
+import org.apache.pinot.spi.plugin.PluginManager;
 import org.apache.pinot.spi.query.QueryThreadContext;
 import org.apache.pinot.spi.utils.CommonConstants.Accounting;
 import org.slf4j.Logger;
@@ -136,8 +137,8 @@ public class ThreadAccountantUtils {
     if (factoryName != null) {
       LOGGER.info("Initializing ThreadAccountant with factory: {}", factoryName);
       try {
-        ThreadAccountantFactory threadAccountantFactory =
-            (ThreadAccountantFactory) Class.forName(factoryName).getDeclaredConstructor().newInstance();
+        ThreadAccountantFactory threadAccountantFactory = (ThreadAccountantFactory) PluginManager.get()
+            .loadClass(factoryName).getDeclaredConstructor().newInstance();
         return threadAccountantFactory.init(config, instanceId, instanceType);
       } catch (Throwable t) {
         LOGGER.error("Caught exception while initializing ThreadAccountant with factory: {}, "

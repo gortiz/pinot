@@ -49,13 +49,17 @@ class PinotPluginConfiguration {
     properties.forEach((k, v) -> {
       String key = k.toString();
       if (k.toString().startsWith("importFrom.")) {
-        String realm = key.substring("importFrom.".length());
-        List<String> importsFrom = Stream.of(v.toString().split(",")).collect(Collectors.toList());
+        String realm = key.substring("importFrom.".length()).trim();
+        List<String> importsFrom = Stream.of(v.toString().split(","))
+            .map(String::trim)
+            .filter(s -> !s.isEmpty())
+            .collect(Collectors.toList());
         importsFromRealm.put(realm, List.copyOf(importsFrom));
       }
     });
     _importsFromRealm = Map.copyOf(importsFromRealm);
-    _parentRealmId = properties.getProperty("parent.realmId");
+    String rawParentRealmId = properties.getProperty("parent.realmId");
+    _parentRealmId = rawParentRealmId != null ? rawParentRealmId.trim() : null;
   }
 
   public Map<String, List<String>> getImportsFromPerRealm() {
