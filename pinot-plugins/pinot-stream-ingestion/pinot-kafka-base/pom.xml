@@ -32,9 +32,12 @@
   <url>https://pinot.apache.org/</url>
   <properties>
     <pinot.root>${basedir}/../../..</pinot.root>
-    <shade.phase.prop>package</shade.phase.prop>
   </properties>
   <dependencies>
+    <!-- pinot-json provides JSONMessageDecoder, which KafkaJSONMessageDecoder extends. It is declared
+         provided because it is expected on the host classpath (shipped in lib/ via pinot-tools), not
+         bundled into the kafka plugin realm: the decoder is loaded by the core ingestion path, so the
+         core's copy must be used. See docs/plugin-realms.md for the plugin dependency-scope contract. -->
     <dependency>
       <groupId>org.apache.pinot</groupId>
       <artifactId>pinot-json</artifactId>
