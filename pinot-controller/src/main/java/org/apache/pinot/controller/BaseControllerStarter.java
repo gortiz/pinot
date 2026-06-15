@@ -728,8 +728,7 @@ public abstract class BaseControllerStarter implements ServiceStartable {
     LOGGER.info("Use class: {} as the AccessControlFactory", accessControlFactoryClass);
     final AccessControlFactory accessControlFactory;
     try {
-      accessControlFactory =
-          (AccessControlFactory) Class.forName(accessControlFactoryClass).getDeclaredConstructor().newInstance();
+      accessControlFactory = loadAccessControlFactory(accessControlFactoryClass);
       accessControlFactory.init(_config, _helixResourceManager);
     } catch (Exception e) {
       throw new RuntimeException("Caught exception while creating new AccessControlFactory instance", e);
@@ -1230,5 +1229,24 @@ public abstract class BaseControllerStarter implements ServiceStartable {
   @VisibleForTesting
   public PeriodicTaskScheduler getPeriodicTaskScheduler() {
     return _periodicTaskScheduler;
+  }
+
+  /**
+   * Loads and instantiates an {@link AccessControlFactory} by class name. Uses
+   * {@link PluginManager#loadClass(String)} so implementations that reside in plugin realms are
+   * resolved correctly, while in-tree classes (on the system classloader) are unaffected.
+   *
+   * <p>The historical {@code Class.forName(...).getDeclaredConstructor().newInstance()} contract is
+   * preserved: non-public (package-private / protected) no-arg constructors are found because
+   * {@link Class#getDeclaredConstructor()} is used rather than {@link Class#getConstructor()}.
+   *
+   * @param className fully-qualified class name of the {@link AccessControlFactory} implementation
+   * @return a freshly constructed (not yet initialised) factory instance
+   * @throws Exception if the class cannot be loaded or instantiated
+   */
+  @VisibleForTesting
+  static AccessControlFactory loadAccessControlFactory(String className) throws Exception {
+    Class<?> clazz = PluginManager.get().loadClass(className);
+    return (AccessControlFactory) clazz.getDeclaredConstructor().newInstance();
   }
 }

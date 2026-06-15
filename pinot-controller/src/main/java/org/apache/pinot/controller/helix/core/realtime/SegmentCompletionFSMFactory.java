@@ -23,6 +23,7 @@ import java.util.HashMap;
 import java.util.Map;
 import org.apache.pinot.common.metadata.segment.SegmentZKMetadata;
 import org.apache.pinot.common.utils.LLCSegmentName;
+import org.apache.pinot.spi.plugin.PluginManager;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -70,7 +71,7 @@ public class SegmentCompletionFSMFactory {
       String className = entry.getValue();
       try {
         LOGGER.info("Initializing SegmentCompletionFSM for scheme {}, classname {}", scheme, className);
-        Class<?> clazz = Class.forName(className);
+        Class<?> clazz = PluginManager.get().loadClass(className);
         register(scheme, (Class<? extends SegmentCompletionFSM>) clazz);
       } catch (Exception e) {
         LOGGER.error("Could not register FSM class for class {} with scheme {}", className, scheme, e);

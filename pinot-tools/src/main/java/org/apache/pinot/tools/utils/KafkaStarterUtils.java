@@ -20,12 +20,11 @@ package org.apache.pinot.tools.utils;
 
 import java.util.ArrayList;
 import java.util.Collections;
-import java.util.Iterator;
 import java.util.List;
 import java.util.Properties;
-import java.util.ServiceLoader;
 import java.util.concurrent.TimeUnit;
 import org.apache.kafka.clients.admin.AdminClient;
+import org.apache.pinot.spi.plugin.PluginManager;
 import org.apache.pinot.spi.stream.StreamConsumerFactory;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -59,10 +58,10 @@ public class KafkaStarterUtils {
       "org.apache.pinot.plugin.stream.kafka.KafkaJSONMessageDecoder";
 
   private static String getKafkaConnectorPackageName() {
-    Iterator<StreamConsumerFactory> iterator = ServiceLoader.load(StreamConsumerFactory.class).iterator();
+    List<StreamConsumerFactory> services = PluginManager.get().loadServices(StreamConsumerFactory.class);
     List<String> streamConsumerFactoryList = new ArrayList<>();
-    while (iterator.hasNext()) {
-      streamConsumerFactoryList.add(iterator.next().getClass().getPackage().getName());
+    for (StreamConsumerFactory factory : services) {
+      streamConsumerFactoryList.add(factory.getClass().getPackage().getName());
     }
     if (streamConsumerFactoryList.size() > 1) {
       Collections.sort(streamConsumerFactoryList, Collections.reverseOrder());

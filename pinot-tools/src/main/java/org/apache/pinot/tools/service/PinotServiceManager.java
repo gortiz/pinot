@@ -27,6 +27,7 @@ import org.apache.pinot.controller.ControllerStarter;
 import org.apache.pinot.minion.MinionStarter;
 import org.apache.pinot.server.starter.helix.HelixServerStarter;
 import org.apache.pinot.spi.env.PinotConfiguration;
+import org.apache.pinot.spi.plugin.PluginManager;
 import org.apache.pinot.spi.services.ServiceRole;
 import org.apache.pinot.spi.services.ServiceStartable;
 import org.apache.pinot.spi.utils.CommonConstants;
@@ -284,7 +285,8 @@ public class PinotServiceManager {
 
   private ServiceStartable getServiceStartable(String serviceStartableClassName) {
     try {
-      return (ServiceStartable) Class.forName(serviceStartableClassName).getDeclaredConstructor().newInstance();
+      return (ServiceStartable) PluginManager.get().loadClass(serviceStartableClassName)
+          .getDeclaredConstructor().newInstance();
     } catch (Exception e) {
       throw new RuntimeException("Failed to instantiate ServiceStartable " + serviceStartableClassName, e);
     }

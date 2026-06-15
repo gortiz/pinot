@@ -36,6 +36,7 @@ import org.apache.pinot.controller.helix.core.periodictask.ControllerPeriodicTas
 import org.apache.pinot.controller.helix.core.periodictask.RealtimeOffsetAutoResetHandler;
 import org.apache.pinot.controller.helix.core.realtime.PinotLLCRealtimeSegmentManager;
 import org.apache.pinot.spi.config.table.TableConfig;
+import org.apache.pinot.spi.plugin.PluginManager;
 import org.apache.pinot.spi.stream.StreamConfig;
 import org.apache.pinot.spi.utils.IngestionConfigUtils;
 import org.apache.pinot.spi.utils.builder.TableNameBuilder;
@@ -213,7 +214,7 @@ public class RealtimeOffsetAutoResetManager extends ControllerPeriodicTask<Realt
       return null;
     }
     try {
-      Class<?> clazz = Class.forName(className);
+      Class<?> clazz = PluginManager.get().loadClass(className);
       if (!RealtimeOffsetAutoResetHandler.class.isAssignableFrom(clazz)) {
         throw new ReflectiveOperationException("Custom handler must implement "
             + RealtimeOffsetAutoResetHandler.class.getCanonicalName());

@@ -20,6 +20,7 @@ package org.apache.pinot.controller.api.events;
 
 import org.apache.pinot.controller.helix.core.PinotHelixResourceManager;
 import org.apache.pinot.spi.env.PinotConfiguration;
+import org.apache.pinot.spi.plugin.PluginManager;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -41,8 +42,8 @@ public abstract class MetadataEventNotifierFactory {
     try {
       LOGGER.info("Instantiating metadata event notifier factory class {}", metadataEventNotifierClassName);
       metadataEventNotifierFactory =
-          (MetadataEventNotifierFactory) Class.forName(metadataEventNotifierClassName).getDeclaredConstructor()
-              .newInstance();
+          (MetadataEventNotifierFactory) PluginManager.get().loadClass(metadataEventNotifierClassName)
+              .getDeclaredConstructor().newInstance();
       metadataEventNotifierFactory.init(configuration, helixResourceManager);
       return metadataEventNotifierFactory;
     } catch (Exception e) {

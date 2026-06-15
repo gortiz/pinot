@@ -19,6 +19,7 @@
 package org.apache.pinot.controller.helix.core.lineage;
 
 import org.apache.pinot.controller.ControllerConf;
+import org.apache.pinot.spi.plugin.PluginManager;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -35,8 +36,8 @@ public class LineageManagerFactory {
   public static LineageManager create(ControllerConf controllerConf) {
     String lineageManagerClassName = controllerConf.getLineageManagerClass();
     try {
-      return (LineageManager) Class.forName(lineageManagerClassName).getConstructor(ControllerConf.class)
-          .newInstance(controllerConf);
+      return (LineageManager) PluginManager.get().loadClass(lineageManagerClassName)
+          .getConstructor(ControllerConf.class).newInstance(controllerConf);
     } catch (Exception e) {
       LOGGER.error("LineageManager not found: {}", lineageManagerClassName);
       throw new RuntimeException(e);

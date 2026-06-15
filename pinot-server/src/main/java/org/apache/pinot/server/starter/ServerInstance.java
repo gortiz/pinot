@@ -183,9 +183,10 @@ public class ServerInstance {
     for (String transformFunctionClassName : serverConf.getTransformFunctions()) {
       try {
         //noinspection unchecked
-        transformFunctionClasses.add((Class<TransformFunction>) Class.forName(transformFunctionClassName));
+        Class<?> clazz = PluginManager.get().loadClass(transformFunctionClassName);
+        transformFunctionClasses.add((Class<TransformFunction>) clazz);
       } catch (ClassNotFoundException e) {
-        throw new RuntimeException("Failed to find transform function class: " + transformFunctionClassName);
+        throw new RuntimeException("Failed to find transform function class: " + transformFunctionClassName, e);
       }
     }
     TransformFunctionFactory.init(transformFunctionClasses);
