@@ -28,6 +28,7 @@ import java.util.Set;
 import org.apache.pinot.spi.plugin.PluginManager;
 import org.apache.pinot.verifier.checks.Check;
 import org.apache.pinot.verifier.checks.InputFormatCheck;
+import org.apache.pinot.verifier.checks.MessageDecoderCheck;
 import org.apache.pinot.verifier.checks.MetricsFactoryCheck;
 import org.apache.pinot.verifier.checks.PinotFsCheck;
 import org.apache.pinot.verifier.checks.StreamConsumerCheck;
@@ -49,8 +50,8 @@ import org.apache.pinot.verifier.checks.StreamConsumerCheck;
  * <h2>Flags</h2>
  * <ul>
  *   <li>{@code --check <comma-sep types>} — restrict to plugin types: any of
- *       {@code input-format}, {@code stream}, {@code fs}, {@code metrics}. Default:
- *       {@code all}.</li>
+ *       {@code input-format}, {@code stream}, {@code decoder}, {@code fs}, {@code metrics}.
+ *       Default: {@code all}.</li>
  *   <li>{@code --plugin <fqcn>} — verify only the named class (across all checks).</li>
  *   <li>{@code --strict-realm} — pass {@code pluginName:fqcn} to PluginManager instead of
  *       bare fqcn. Bare-fqcn lookup goes through the realm walk added by apache/pinot#18386;
@@ -98,6 +99,7 @@ public final class PluginVerifier {
     registry.put("input-format", new InputFormatCheck());
     registry.put("fs", new PinotFsCheck());
     registry.put("stream", new StreamConsumerCheck());
+    registry.put("decoder", new MessageDecoderCheck());
     registry.put("metrics", new MetricsFactoryCheck());
 
     Set<String> selectedTypes;
@@ -205,7 +207,7 @@ public final class PluginVerifier {
         + "         org.apache.pinot.verifier.PluginVerifier [flags]\n"
         + "\n"
         + "Flags:\n"
-        + "  --check <types>       Comma-separated subset of: input-format, stream, fs, metrics.\n"
+        + "  --check <types>       Comma-separated subset of: input-format, stream, decoder, fs, metrics.\n"
         + "                        Default: all\n"
         + "  --plugin <fqcn>       Run only the verifier(s) targeting the named FQCN.\n"
         + "  --strict-realm        Use pluginName:FQCN form instead of bare FQCN. The bare form\n"

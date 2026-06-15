@@ -22,6 +22,7 @@ import java.io.ByteArrayOutputStream;
 import java.io.PrintStream;
 import org.testng.annotations.Test;
 
+import static org.testng.Assert.assertFalse;
 import static org.testng.Assert.assertNotEquals;
 import static org.testng.Assert.assertTrue;
 
@@ -57,6 +58,19 @@ public class PluginVerifierSmokeTest {
     Result r = invokeMain(new String[]{"--check", "metrics"});
     assertTrue(r.stdout.contains("Metrics factory plugins"),
         "expected the metrics check section header, got:\n" + r.stdout);
+  }
+
+  @Test
+  public void decoderCheckIsRegisteredAndRunsWithoutThrowing() {
+    // Confirms the 'decoder' check type is recognized (not an "Unknown check type"), is wired
+    // into the registry, and its MessageDecoderCheck section runs without throwing. Guards
+    // against a registry-key typo or a missing registration that would otherwise only surface
+    // in the end-to-end bin-dist CI job.
+    Result r = invokeMain(new String[]{"--check", "decoder"});
+    assertTrue(r.stdout.contains("Stream message decoder plugins"),
+        "expected the decoder check section header, got:\n" + r.stdout + "\n--- stderr:\n" + r.stderr);
+    assertFalse(r.stderr.contains("Unknown check type"),
+        "decoder must be a recognized check type, got stderr:\n" + r.stderr);
   }
 
   private record Result(int rc, String stdout, String stderr) { }

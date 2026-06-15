@@ -62,7 +62,7 @@ classloader) or from a plugin realm under `plugins/`.
 
 | flag | meaning |
 |---|---|
-| `--check <types>` | Comma-separated subset of: `input-format`, `stream`, `fs`, `metrics`. Default: `all` |
+| `--check <types>` | Comma-separated subset of: `input-format`, `stream`, `decoder`, `fs`, `metrics`. Default: `all` |
 | `--plugin <fqcn>` | Restrict to the verifier(s) targeting this single FQCN |
 | `--strict-realm` | Look up via `pluginName:FQCN`. Bare-FQCN form (default) relies on the realm walk added by apache/pinot#18386; strict form works on both old and new code |
 | `--verbose`, `-v` | Print per-class `CodeSource` so you can see which jar/realm each class came from |
@@ -74,6 +74,7 @@ classloader) or from a plugin realm under `plugins/`.
 | `input-format` | `PluginManager.createInstance(<RecordReader-fqcn>)` for every shipped Avro/CSV/JSON/Parquet/ORC/Protobuf/Thrift/Arrow/Confluent reader |
 | `fs` | `PluginManager.createInstance(<PinotFS-fqcn>)` for S3/GCS/ADLS/HDFS |
 | `stream` | `PluginManager.createInstance(<StreamConsumerFactory-fqcn>)` for Kafka 3.0 / Kinesis / Pulsar |
+| `decoder` | `PluginManager.createInstance(<StreamMessageDecoder-fqcn>)` for the JSON/CSV/Avro/Protobuf decoders, exactly as `RealtimeSegmentDataManager` does. Includes `KafkaJSONMessageDecoder`, whose superclass lives on the host classpath — the realm→parent delegation that a prior packaging regression broke |
 | `metrics` | `PluginManager.loadServices(PinotMetricsFactory.class)` — the realm-aware ServiceLoader walk that `PinotMetricUtils.initializePinotMetricsFactory` uses |
 
 ## Limits
