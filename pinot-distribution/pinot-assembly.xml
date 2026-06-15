@@ -73,7 +73,7 @@
       <destName>lib/pinot-plugin-verifier-${project.version}.jar</destName>
     </file>
     <file>
-      <source>${pinot.root}/pinot-plugin-verifier/src/main/resources/bin/verify-plugins.sh</source>
+      <source>${pinot.root}/pinot-plugin-verifier/src/main/scripts/verify-plugins.sh</source>
       <destName>bin/verify-plugins.sh</destName>
       <fileMode>0755</fileMode>
     </file>
