@@ -44,6 +44,21 @@
     <pinot.root>${basedir}/..</pinot.root>
   </properties>
 
+  <build>
+    <plugins>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-surefire-plugin</artifactId>
+        <configuration>
+          <systemPropertyVariables>
+            <!-- Passed to PluginPropertiesConsistencyTest so it can locate pinot-plugins/ -->
+            <pinot.root>${pinot.root}</pinot.root>
+          </systemPropertyVariables>
+        </configuration>
+      </plugin>
+    </plugins>
+  </build>
+
   <dependencies>
     <!--
       Verifier classes only reference public APIs from pinot-spi (PluginManager) plus the
