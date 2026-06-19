@@ -50,12 +50,10 @@ public class BrokerStatisticsProvider implements PinotStatisticsProvider {
     return _statsManager.getTableStats(tableName);
   }
 
-  /// Column-level statistics are not yet collected in T1 of the CBO initiative.
-  /// Returns `null` unconditionally; will be implemented in a future task.
   @Nullable
   @Override
   public ColumnStatistics getColumnStatistics(String tableName, String columnName) {
-    return null;
+    return _statsManager.getColumnStats(tableName, columnName);
   }
 
   @Override
