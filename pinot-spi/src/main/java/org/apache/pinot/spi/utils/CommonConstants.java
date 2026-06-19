@@ -612,6 +612,31 @@ public class CommonConstants {
     /// a persistent volume to preserve collected statistics across restarts.
     public static final String CONFIG_OF_STATS_DIR = "pinot.broker.stats.dir";
 
+    /// [EXPERIMENTAL] When `true`, the broker fans out bulk column-metadata requests to servers
+    /// and persists per-segment per-column statistics (NDV, min/max, avgBytesPerValue) into the
+    /// local stats store. Requires [#CONFIG_OF_STATS_ENABLED] to also be `true`.
+    ///
+    /// Load estimate: `(segments × columns × brokers) / refreshIntervalSec` HTTP GETs per second.
+    /// The single background thread + debounce window bounds bursts to at most one batched fan-out
+    /// per table per [#CONFIG_OF_STATS_COLUMN_REFRESH_INTERVAL_SEC].
+    ///
+    /// Disabled by default; enable only when the stats store is enabled and you want per-column
+    /// statistics for cost-based join ordering.
+    public static final String CONFIG_OF_STATS_COLUMN_ENABLED = "pinot.broker.stats.column.enabled";
+    public static final boolean DEFAULT_STATS_COLUMN_ENABLED = false;
+
+    /// Debounce + refresh interval (seconds) for the column-stats background pull.
+    /// Changed segments are coalesced and fetched at most once per this window.
+    /// Default: 300 s (5 min). Lowering this increases server load proportionally.
+    public static final String CONFIG_OF_STATS_COLUMN_REFRESH_INTERVAL_SEC =
+        "pinot.broker.stats.column.refresh.interval.sec";
+    public static final int DEFAULT_STATS_COLUMN_REFRESH_INTERVAL_SEC = 300;
+
+    /// Per-server HTTP request timeout (milliseconds) for the column-stats pull.
+    public static final String CONFIG_OF_STATS_COLUMN_FETCH_TIMEOUT_MS =
+        "pinot.broker.stats.column.fetch.timeout.ms";
+    public static final int DEFAULT_STATS_COLUMN_FETCH_TIMEOUT_MS = 30_000;
+
     // If this config is set to true, the broker will check every query executed using the v1 query engine and attempt
     // to determine whether the query could have successfully been run on the v2 / multi-stage query engine. If not,
     // a counter metric will be incremented - if this counter remains 0 during regular query workload execution, it

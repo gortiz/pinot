@@ -26,6 +26,11 @@ import java.util.List;
 import java.util.Map;
 import java.util.OptionalLong;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.TimeUnit;
 import java.util.function.Function;
 import javax.annotation.Nullable;
 import org.apache.helix.model.ExternalView;
@@ -44,7 +49,8 @@ import org.slf4j.LoggerFactory;
 /// [SegmentZkMetadataFetchListener] instances that populate it.
 ///
 /// ### Usage
-/// 1. Construct with a pre-created (but not yet init()d) [StatsStore].
+/// 1. Construct with a pre-created (but not yet init()d) [StatsStore], and optionally a
+///    [ColumnStatsSource] for column-level statistics.
 /// 1. Call [#init()] — on failure the manager disables itself; broker startup is not affected.
 /// 1. For each table, call [#createListener(String)] and register the result on that
 ///    table's [org.apache.pinot.broker.routing.segmentmetadata.SegmentZkMetadataFetcher]
@@ -52,30 +58,74 @@ import org.slf4j.LoggerFactory;
 /// 1. On table removal, call [#onTableRemoved(String)].
 /// 1. Close the manager when the broker shuts down.
 ///
+/// ### Column-stats background pull
+/// When a [ColumnStatsSource] is provided, the manager asynchronously fetches column statistics
+/// for segments added or changed since the last successful fetch (CRC-delta). Requests are
+/// debounced: changed segments are collected and dispatched as one batched call per table at
+/// most once every `refreshIntervalSec` seconds. A single dedicated
+/// [ScheduledExecutorService] thread handles all tables to bound total concurrency and avoid
+/// surprising query-path latency spikes.
+///
+/// ### Load math
+/// Each fetch is one bulk HTTP GET per server per table. With T tables, S servers per table,
+/// and a refresh interval of R seconds the steady-state rate is at most T × S / R GETs/second.
+/// For a typical deployment (100 tables, 5 servers, R = 300 s) that is ≈1.7 GETs/s — well
+/// within what a Pinot server can absorb. Refreshes are not coordinated across brokers, so N
+/// brokers add an N× multiplier; the default R = 300 s keeps this acceptable even at N = 10.
+///
 /// ### Thread-safety
 /// Read methods ([#getTableStats], [#estimateRowsInTimeRange]) are safe for
 /// concurrent access by any number of reader threads. [#createListener] and
 /// [#onTableRemoved] are called from the routing-manager's table-build thread; the store
-/// itself handles single-writer / multi-reader concurrency internally.
+/// itself handles single-writer / multi-reader concurrency internally. The column-stats
+/// background thread accesses the store sequentially — only one pull is in flight at a time
+/// per table, enforced by the single-thread executor.
 ///
 /// ### Failure isolation
 /// All [StatsStoreException] escapes are suppressed here — callers on the query path
-/// will receive `null` / empty rather than a propagated exception.
+/// will receive `null` / empty rather than a propagated exception. Column-stats fetch failures
+/// are logged and discarded; they never propagate to the listener or the query path.
 public class BrokerTableStatsManager implements Closeable {
   private static final Logger LOGGER = LoggerFactory.getLogger(BrokerTableStatsManager.class);
 
   private final StatsStore _statsStore;
   private final LogicalTableStatsResolver _resolver;
+  @Nullable
+  private final ColumnStatsSource _columnStatsSource;
+  private final long _columnRefreshIntervalMs;
+  /// Single-thread executor for all column-stats background pulls. Null when no column source.
+  @Nullable
+  private final ScheduledExecutorService _columnStatsExecutor;
+
   /// False when init() failed; all operations become no-ops in that state.
   private volatile boolean _enabled = false;
 
-  /// Constructs a new manager backed by the given [StatsStore].
+  /// Constructs a new manager backed by the given [StatsStore] with no column-stats source.
   /// The store must not have been opened yet; [#init()] will call [StatsStore#init()].
   ///
   /// @param statsStore backing store; owned by this manager
   public BrokerTableStatsManager(StatsStore statsStore) {
+    this(statsStore, null, 0);
+  }
+
+  /// Constructs a new manager with an optional [ColumnStatsSource] for column-level statistics.
+  ///
+  /// @param statsStore             backing store; owned by this manager
+  /// @param columnStatsSource      source to pull column stats from; null disables column pulls
+  /// @param columnRefreshIntervalMs debounce window: segments are coalesced and fetched in one
+  ///                                batch per table at most once per this interval (milliseconds)
+  public BrokerTableStatsManager(StatsStore statsStore, @Nullable ColumnStatsSource columnStatsSource,
+      long columnRefreshIntervalMs) {
     _statsStore = statsStore;
     _resolver = new LogicalTableStatsResolver(statsStore);
+    _columnStatsSource = columnStatsSource;
+    _columnRefreshIntervalMs = columnRefreshIntervalMs > 0 ? columnRefreshIntervalMs : 0;
+    _columnStatsExecutor = columnStatsSource != null
+        ? Executors.newSingleThreadScheduledExecutor(r -> {
+          Thread t = new Thread(r, "broker-column-stats-puller");
+          t.setDaemon(true);
+          return t;
+        }) : null;
   }
 
   /// Sets the provider used to look up the time boundary (epoch-milliseconds) for a raw table
@@ -126,7 +176,8 @@ public class BrokerTableStatsManager implements Closeable {
     if (!_enabled) {
       return NoOpListener.INSTANCE;
     }
-    return new TableStatsZkListener(tableNameWithType, _statsStore);
+    return new TableStatsZkListener(tableNameWithType, _statsStore, _columnStatsSource, _columnStatsExecutor,
+        _columnRefreshIntervalMs);
   }
 
   /// Removes all persisted stats for the given table. Called when the routing entry for a table
@@ -188,6 +239,16 @@ public class BrokerTableStatsManager implements Closeable {
     // Disable before closing the store so that concurrent read calls on the query path
     // short-circuit cleanly without triggering WARN log spam from a closed store.
     _enabled = false;
+    if (_columnStatsExecutor != null) {
+      _columnStatsExecutor.shutdownNow();
+    }
+    if (_columnStatsSource instanceof Closeable) {
+      try {
+        ((Closeable) _columnStatsSource).close();
+      } catch (IOException e) {
+        LOGGER.warn("Error closing ColumnStatsSource: {}", e.getMessage());
+      }
+    }
     try {
       _statsStore.close();
     } catch (IOException e) {
@@ -203,18 +264,37 @@ public class BrokerTableStatsManager implements Closeable {
   /// [SegmentZkMetadataFetchListener] that maintains segment-level statistics for a single
   /// table in a [StatsStore].
   ///
+  /// ### Column-stats background pull
+  /// When a [ColumnStatsSource] and [ScheduledExecutorService] are provided, segment changes
+  /// are accumulated in `_pendingColumnSegments` (under the routing-manager's per-table lock)
+  /// and a debounced fetch task is scheduled on the background executor. The task fires after
+  /// `refreshIntervalMs` from the first change in the current burst, then clears the pending
+  /// set and runs the fan-out. A subsequent change while a task is pending simply adds the
+  /// segment to the set — no new task is scheduled — so bursts coalesce into one fetch.
+  ///
   /// ### Thread-safety
-  /// Instances are called sequentially from the routing manager's per-table lock, so no
-  /// additional synchronization is needed inside this class.
+  /// Instances are called sequentially from the routing manager's per-table lock, so the
+  /// `_persistedSegments` and `_pendingColumnSegments` sets need no additional synchronization.
+  /// The background executor accesses `_statsStore` from a separate thread; [StatsStore] is
+  /// documented as single-writer/multi-reader safe, so concurrent upserts from two different
+  /// threads would be unsafe — but the single-thread executor ensures at most one column-pull
+  /// task runs at a time for any given table.
   ///
   /// ### Failure isolation
   /// All [StatsStoreException] are caught; errors are logged at WARN and the listener
-  /// never throws back into the routing manager.
+  /// never throws back into the routing manager. Column-stats fetch errors are logged and
+  /// dropped; they never affect the segment-stats path.
   static final class TableStatsZkListener implements SegmentZkMetadataFetchListener {
     private static final Logger LOG = LoggerFactory.getLogger(TableStatsZkListener.class);
 
     private final String _tableNameWithType;
     private final StatsStore _statsStore;
+    @Nullable
+    private final ColumnStatsSource _columnStatsSource;
+    @Nullable
+    private final ScheduledExecutorService _columnStatsExecutor;
+    private final long _columnRefreshIntervalMs;
+
     /// In-memory mirror of the segments currently persisted in the store for this table.
     /// Maintained after [#init] so that [#onAssignmentChange] can compute
     /// removals without a full DB round-trip.
@@ -223,9 +303,35 @@ public class BrokerTableStatsManager implements Closeable {
     /// synchronization needed.
     private final Set<String> _persistedSegments = new HashSet<>();
 
+    /// Segments queued for the next column-stats fetch (changed or new since the last fetch).
+    /// Cleared when the debounced task fires. Written from the routing-manager's per-table lock
+    /// (via [#scheduleColumnFetch]); drained from the background executor thread (via
+    /// [#runColumnFetch]). Uses a thread-safe set so that concurrent access is safe.
+    private final Set<String> _pendingColumnSegments = ConcurrentHashMap.newKeySet();
+
+    /// Reference to the currently scheduled (not yet fired) debounce task, or null.
+    ///
+    /// Written from two threads:
+    /// - the routing-manager's per-table lock thread (in [#scheduleColumnFetch]) which sets it
+    ///   to a new [ScheduledFuture]; and
+    /// - the background executor thread (in [#runColumnFetch]) which resets it to null.
+    ///
+    /// Declared `volatile` so both threads see a consistent value without requiring a shared lock.
+    @Nullable
+    private volatile ScheduledFuture<?> _pendingColumnFetch;
+
     TableStatsZkListener(String tableNameWithType, StatsStore statsStore) {
+      this(tableNameWithType, statsStore, null, null, 0);
+    }
+
+    TableStatsZkListener(String tableNameWithType, StatsStore statsStore,
+        @Nullable ColumnStatsSource columnStatsSource,
+        @Nullable ScheduledExecutorService columnStatsExecutor, long columnRefreshIntervalMs) {
       _tableNameWithType = tableNameWithType;
       _statsStore = statsStore;
+      _columnStatsSource = columnStatsSource;
+      _columnStatsExecutor = columnStatsExecutor;
+      _columnRefreshIntervalMs = columnRefreshIntervalMs;
     }
 
     @Override
@@ -253,8 +359,12 @@ public class BrokerTableStatsManager implements Closeable {
         long crc = meta.getCrc();
         Long stored = storedCrcs.get(segment);
         if (stored != null && stored == crc) {
-          // CRC matches — data is still valid, skip upsert but track as persisted
+          // CRC matches — row stats data is still valid, skip upsert but track as persisted.
+          // Still schedule a column-stats fetch: the column-stats source may have been enabled for
+          // the first time after this broker restart (CRC-delta only guards row stats, not column
+          // stats). The debounce window coalesces all segments into one bulk fetch.
           _persistedSegments.add(segment);
+          scheduleColumnFetch(segment);
           continue;
         }
         toUpsert.add(buildRow(segment, meta));
@@ -269,6 +379,10 @@ public class BrokerTableStatsManager implements Closeable {
         } catch (StatsStoreException e) {
           LOG.warn("Failed to upsert segment stats for {} during init: {}", _tableNameWithType,
               e.getMessage());
+        }
+        // Schedule a column-stats fetch for changed/new segments
+        for (SegmentStatsRow row : toUpsert) {
+          scheduleColumnFetch(row.getSegmentName());
         }
       }
 
@@ -288,6 +402,7 @@ public class BrokerTableStatsManager implements Closeable {
           LOG.warn("Failed to remove stale segments for {} during init: {}", _tableNameWithType,
               e.getMessage());
         }
+        _pendingColumnSegments.removeAll(toRemove);
       }
     }
 
@@ -316,6 +431,9 @@ public class BrokerTableStatsManager implements Closeable {
             LOG.warn("Failed to upsert segment stats for {} on assignment change: {}",
                 _tableNameWithType, e.getMessage());
           }
+          for (SegmentStatsRow row : toUpsert) {
+            scheduleColumnFetch(row.getSegmentName());
+          }
         }
       }
 
@@ -335,6 +453,7 @@ public class BrokerTableStatsManager implements Closeable {
           LOG.warn("Failed to remove dropped segments for {} on assignment change: {}",
               _tableNameWithType, e.getMessage());
         }
+        _pendingColumnSegments.removeAll(toRemove);
       }
     }
 
@@ -349,6 +468,7 @@ public class BrokerTableStatsManager implements Closeable {
           LOG.warn("Failed to remove segment {} for {} on refresh: {}", segment,
               _tableNameWithType, e.getMessage());
         }
+        _pendingColumnSegments.remove(segment);
         return;
       }
       SegmentZKMetadata meta = new SegmentZKMetadata(znRecord);
@@ -359,6 +479,65 @@ public class BrokerTableStatsManager implements Closeable {
       } catch (StatsStoreException e) {
         LOG.warn("Failed to upsert segment {} for {} on refresh: {}", segment, _tableNameWithType,
             e.getMessage());
+      }
+      scheduleColumnFetch(segment);
+    }
+
+    // ---------------------------------------------------------------------------
+    // Column-stats debounce helpers
+    // ---------------------------------------------------------------------------
+
+    /// Adds `segment` to the pending set and, if no task is already scheduled, schedules a
+    /// debounced fetch task. Called only from the routing-manager's per-table lock.
+    private void scheduleColumnFetch(String segment) {
+      if (_columnStatsSource == null || _columnStatsExecutor == null) {
+        return;
+      }
+      _pendingColumnSegments.add(segment);
+      if (_pendingColumnFetch == null || _pendingColumnFetch.isDone()) {
+        // Snapshot table name and executor reference before scheduling
+        String table = _tableNameWithType;
+        _pendingColumnFetch = _columnStatsExecutor.schedule(() -> runColumnFetch(table),
+            _columnRefreshIntervalMs, TimeUnit.MILLISECONDS);
+      }
+      // else: a task is already pending — the segment is added to _pendingColumnSegments and will
+      // be picked up when the existing task fires.
+    }
+
+    /// Drains `_pendingColumnSegments`, fetches column stats for them, and persists the result.
+    /// Called on the background executor thread — never on the ZK-listener thread.
+    ///
+    /// The pending set is thread-safe ([ConcurrentHashMap.newKeySet()]); we snapshot and clear it
+    /// atomically-enough: any segments added after the snapshot is taken will be picked up on the
+    /// next scheduled run. Since `_pendingColumnFetch` is set to null before the fetch runs, a
+    /// concurrent [#scheduleColumnFetch] call will schedule a new task if new segments arrive
+    /// while a fetch is in progress.
+    private void runColumnFetch(String table) {
+      // Clear the pending fetch reference first so new changes schedule a fresh task
+      _pendingColumnFetch = null;
+
+      if (_pendingColumnSegments.isEmpty()) {
+        return;
+      }
+      // Snapshot and drain — any new segments added concurrently will be in the next run
+      Set<String> toFetch = Set.copyOf(_pendingColumnSegments);
+      _pendingColumnSegments.removeAll(toFetch);
+
+      try {
+        Map<String, List<SegmentColumnStatsRow>> fetched = _columnStatsSource.fetchColumnStats(table, toFetch);
+        if (fetched.isEmpty()) {
+          return;
+        }
+        List<SegmentColumnStatsRow> allRows = new ArrayList<>();
+        for (List<SegmentColumnStatsRow> rows : fetched.values()) {
+          allRows.addAll(rows);
+        }
+        _statsStore.upsertSegmentColumnStats(table, allRows);
+        LOG.debug("Persisted column stats for {} segments of table {}", fetched.size(), table);
+      } catch (StatsStoreException e) {
+        LOG.warn("Failed to persist column stats for table {}: {}", table, e.getMessage());
+      } catch (Exception e) {
+        LOG.warn("Failed to fetch column stats for table {}: {}", table, e.getMessage());
       }
     }
 

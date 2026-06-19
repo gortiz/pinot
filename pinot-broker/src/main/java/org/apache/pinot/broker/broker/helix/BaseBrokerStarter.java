@@ -65,8 +65,11 @@ import org.apache.pinot.broker.requesthandler.SingleConnectionBrokerRequestHandl
 import org.apache.pinot.broker.requesthandler.TimeSeriesRequestHandler;
 import org.apache.pinot.broker.routing.manager.BrokerRoutingManager;
 import org.apache.pinot.broker.routing.tablesampler.TableSamplerFactory;
+import org.apache.pinot.broker.stats.BrokerPullColumnStatsSource;
 import org.apache.pinot.broker.stats.BrokerStatisticsProvider;
 import org.apache.pinot.broker.stats.BrokerTableStatsManager;
+import org.apache.pinot.broker.stats.ColumnStatsSource;
+import org.apache.pinot.broker.stats.HelixServerSegmentProvider;
 import org.apache.pinot.broker.stats.SqliteStatsStore;
 import org.apache.pinot.broker.stats.StatsStoreException;
 import org.apache.pinot.common.Utils;
@@ -81,6 +84,7 @@ import org.apache.pinot.common.evaluator.GroovyFunctionEvaluator;
 import org.apache.pinot.common.failuredetector.FailureDetector;
 import org.apache.pinot.common.failuredetector.FailureDetectorFactory;
 import org.apache.pinot.common.function.FunctionRegistry;
+import org.apache.pinot.common.http.PoolingHttpClientConnectionManagerHelper;
 import org.apache.pinot.common.metadata.ZKMetadataProvider;
 import org.apache.pinot.common.metrics.BrokerGauge;
 import org.apache.pinot.common.metrics.BrokerMeter;
@@ -829,12 +833,54 @@ public abstract class BaseBrokerStarter implements ServiceStartable {
 
   /// Creates and initializes the [BrokerTableStatsManager]. Returns `null` if the
   /// manager cannot be started (error is logged; broker startup continues normally).
+  ///
+  /// When [Broker#CONFIG_OF_STATS_COLUMN_ENABLED] is also true, a [BrokerPullColumnStatsSource]
+  /// is wired in. It uses a dedicated [org.apache.hc.client5.http.impl.io.PoolingHttpClientConnectionManager]
+  /// separate from the one in [BrokerAdminApiApplication] so that column-stats background pulls
+  /// do not compete for connections with regular broker admin requests.
   @Nullable
   private BrokerTableStatsManager createStatsManager() {
     Path statsDir = resolveStatsDir();
     LOGGER.info("Initializing BrokerTableStatsManager at {}", statsDir);
     SqliteStatsStore statsStore = new SqliteStatsStore(statsDir);
-    BrokerTableStatsManager statsManager = new BrokerTableStatsManager(statsStore);
+
+    boolean columnEnabled = _brokerConf.getProperty(Broker.CONFIG_OF_STATS_COLUMN_ENABLED,
+        Broker.DEFAULT_STATS_COLUMN_ENABLED);
+    ColumnStatsSource columnStatsSource = null;
+    long columnRefreshIntervalMs = 0;
+    if (columnEnabled) {
+      int refreshIntervalSec = _brokerConf.getProperty(Broker.CONFIG_OF_STATS_COLUMN_REFRESH_INTERVAL_SEC,
+          Broker.DEFAULT_STATS_COLUMN_REFRESH_INTERVAL_SEC);
+      int fetchTimeoutMs = _brokerConf.getProperty(Broker.CONFIG_OF_STATS_COLUMN_FETCH_TIMEOUT_MS,
+          Broker.DEFAULT_STATS_COLUMN_FETCH_TIMEOUT_MS);
+      columnRefreshIntervalMs = (long) refreshIntervalSec * 1000;
+
+      // Resolved lazily via HelixServerSegmentProvider — uses the live ServerInstance map from
+      // the routing manager (populated by processInstanceConfigChange after init) and reads
+      // ExternalViews from ZK for segment→server resolution.
+      HelixServerSegmentProvider segmentProvider = new HelixServerSegmentProvider(
+          _propertyStore,
+          _spectatorHelixManager.getHelixDataAccessor().keyBuilder().externalViews().getPath() + "/",
+          _routingManager.getEnabledServerInstanceMap());
+
+      // TableCache is not yet initialized here; pass a supplier that reads it lazily.
+      // We use the field reference directly — it will be non-null by the time column pulls fire
+      // (column pulls are debounced by the refresh interval, well after startup completes).
+      // _tableCache is null here but will be set before the first column-stats pull fires
+      // (pulls are debounced by refreshIntervalMs; _tableCache is initialized synchronously
+      // before broker startup completes).
+      columnStatsSource = new BrokerPullColumnStatsSource(
+          Executors.newCachedThreadPool(),
+          PoolingHttpClientConnectionManagerHelper.createWithSocketFactory(),
+          segmentProvider,
+          ignoredTableName -> _tableCache,
+          fetchTimeoutMs);
+      LOGGER.info("Column stats pull enabled (refreshIntervalSec={}, fetchTimeoutMs={})",
+          refreshIntervalSec, fetchTimeoutMs);
+    }
+
+    BrokerTableStatsManager statsManager = new BrokerTableStatsManager(statsStore, columnStatsSource,
+        columnRefreshIntervalMs);
     try {
       statsManager.init();
       return statsManager;
