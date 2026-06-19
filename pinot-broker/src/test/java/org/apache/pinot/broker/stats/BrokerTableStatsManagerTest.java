@@ -38,6 +38,7 @@ import org.apache.pinot.broker.routing.segmentmetadata.SegmentZkMetadataFetchLis
 import org.apache.pinot.broker.stats.BrokerTableStatsManager.TableStatsZkListener;
 import org.apache.pinot.common.metadata.segment.SegmentZKMetadata;
 import org.apache.pinot.query.planner.spi.stats.ColumnStatistics;
+import org.apache.pinot.query.planner.spi.stats.StatConfidence;
 import org.apache.pinot.query.planner.spi.stats.TableStatistics;
 import org.apache.pinot.spi.utils.CommonConstants.Segment.Realtime.Status;
 import org.testng.annotations.AfterMethod;
@@ -558,6 +559,49 @@ public class BrokerTableStatsManagerTest {
     assertTrue(crcs.containsKey("seg1"), "Row stats must be persisted despite column fetch error");
 
     mgr.close();
+  }
+
+  // ---------------------------------------------------------------------------
+  // BrokerStatisticsProvider.getColumnStatistics — delegation test
+  // ---------------------------------------------------------------------------
+
+  /// [BrokerStatisticsProvider#getColumnStatistics] must delegate to the manager and return
+  /// the same column stats as [BrokerTableStatsManager#getColumnStats].
+  @Test
+  public void testBrokerStatisticsProviderDelegatesColumnStats()
+      throws Exception {
+    // Insert a segment with column stats
+    _store.upsertSegmentStats(TABLE, Collections.singletonList(
+        new SegmentStatsRow("seg1", 1L, 100L, 1000L, 0L, 10L, false)));
+    _store.upsertSegmentColumnStats(TABLE, Collections.singletonList(
+        new SegmentColumnStatsRow("seg1", "price", 25L, "10", "500", true, 8.0, 0.05)));
+
+    BrokerStatisticsProvider provider = new BrokerStatisticsProvider(_manager);
+    ColumnStatistics stats = provider.getColumnStatistics(TABLE, "price");
+    assertNotNull(stats, "Provider must return column stats stored in the manager");
+    assertEquals(stats.getNdv(), 25L);
+    // SqliteStatsStore always returns ESTIMATED for aggregated NDV stats
+    assertEquals(stats.getNdvConfidence(), StatConfidence.ESTIMATED);
+    assertTrue(stats.isMinTrusted());
+  }
+
+  /// When no column stats exist, the provider must return `null` without throwing.
+  @Test
+  public void testBrokerStatisticsProviderReturnsNullWhenNoColumnStats() {
+    BrokerStatisticsProvider provider = new BrokerStatisticsProvider(_manager);
+    assertNull(provider.getColumnStatistics(TABLE, "nonexistent"),
+        "Provider must return null when no column stats available");
+  }
+
+  /// When the manager is disabled, the provider must return `null`.
+  @Test
+  public void testBrokerStatisticsProviderReturnsNullWhenManagerDisabled() {
+    StatsStore throwingStore = new ThrowingStatsStore();
+    BrokerTableStatsManager disabledManager = new BrokerTableStatsManager(throwingStore);
+    // Manager not init()d → _enabled is false
+    BrokerStatisticsProvider provider = new BrokerStatisticsProvider(disabledManager);
+    assertNull(provider.getColumnStatistics(TABLE, "age"),
+        "Disabled manager must yield null from provider");
   }
 
   // ---------------------------------------------------------------------------

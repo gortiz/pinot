@@ -21,6 +21,7 @@ package org.apache.pinot.broker.stats;
 import java.util.OptionalLong;
 import java.util.function.Function;
 import javax.annotation.Nullable;
+import org.apache.pinot.query.planner.spi.stats.ColumnStatistics;
 import org.apache.pinot.query.planner.spi.stats.StatConfidence;
 import org.apache.pinot.query.planner.spi.stats.TableStatistics;
 import org.apache.pinot.spi.config.table.TableConfig;
@@ -124,6 +125,50 @@ public class LogicalTableStatsResolver {
     }
     // Raw name — hybrid logical view
     return getHybridTableStats(tableName);
+  }
+
+  /// Returns per-column statistics for the given table name and column name, or `null` if
+  /// unavailable. Applies the same raw-vs-suffixed name semantics as [#getTableStats].
+  ///
+  /// For a **typed** name (`foo_OFFLINE` / `foo_REALTIME`), returns the physical column stats
+  /// from the store directly.
+  ///
+  /// For a **raw** name, merges the two physical tables' column stats conservatively:
+  /// - min = numeric-aware min of the two mins
+  /// - max = numeric-aware max of the two maxs
+  /// - ndv = max of the two ndvs (upper bound on distinct values)
+  /// - minTrusted = AND of the two minTrusted flags
+  /// - confidence = weakest of the two ndvConfidences, but at most ESTIMATED
+  /// - avgBytesPerValue = max of the two values (avoids underestimating memory)
+  /// - nullFraction = max of the two values (conservative over-estimate)
+  ///
+  /// If only one physical table has stats, returns that side's stats unchanged. Any store error is
+  /// logged at WARN and `null` is returned.
+  ///
+  /// @param tableName raw (logical) or suffixed (physical) table name
+  /// @param columnName column name to look up
+  @Nullable
+  public ColumnStatistics getColumnStats(String tableName, String columnName) {
+    TableType type = TableNameBuilder.getTableTypeFromTableName(tableName);
+    if (type != null) {
+      return readPhysicalColumnStats(tableName, columnName);
+    }
+    // Raw name — merge offline and realtime sides
+    String offlineTable = TableNameBuilder.OFFLINE.tableNameWithType(tableName);
+    String realtimeTable = TableNameBuilder.REALTIME.tableNameWithType(tableName);
+    ColumnStatistics offlineStats = readPhysicalColumnStats(offlineTable, columnName);
+    ColumnStatistics realtimeStats = readPhysicalColumnStats(realtimeTable, columnName);
+
+    if (offlineStats == null && realtimeStats == null) {
+      return null;
+    }
+    if (offlineStats == null) {
+      return realtimeStats;
+    }
+    if (realtimeStats == null) {
+      return offlineStats;
+    }
+    return mergeColumnStats(columnName, offlineStats, realtimeStats);
   }
 
   /// Returns an estimate of the number of rows whose time column falls in
@@ -372,6 +417,131 @@ public class LogicalTableStatsResolver {
         .tableSizeBytes(original.getTableSizeBytes(), sizeConf)
         .updatedAtMs(original.getUpdatedAtMs())
         .build();
+  }
+
+  /// Reads raw physical column stats from the store, suppressing errors.
+  @Nullable
+  private ColumnStatistics readPhysicalColumnStats(String tableNameWithType, String columnName) {
+    try {
+      return _statsStore.getColumnStats(tableNameWithType, columnName);
+    } catch (StatsStoreException e) {
+      LOGGER.warn("Failed to read column stats for {}/{}: {}", tableNameWithType, columnName,
+          e.getMessage());
+      return null;
+    } catch (RuntimeException e) {
+      LOGGER.warn("Unexpected error reading column stats for {}/{}: {}", tableNameWithType,
+          columnName, e.getMessage());
+      return null;
+    }
+  }
+
+  /// Merges column statistics from two physical tables (offline + realtime) conservatively.
+  ///
+  /// Strategy:
+  /// - NDV: max of the two (upper bound on true distinct count across both sides)
+  /// - min: numeric-aware minimum of the two mins
+  /// - max: numeric-aware maximum of the two maxs
+  /// - minTrusted: AND (trusted only when both sides trust it)
+  /// - ndvConfidence: weakest of the two, but at most ESTIMATED (merging introduces imprecision)
+  /// - avgBytesPerValue: max (conservative memory estimate)
+  /// - nullFraction: max (conservative null estimate)
+  private static ColumnStatistics mergeColumnStats(String columnName,
+      ColumnStatistics a, ColumnStatistics b) {
+    long ndv = Math.max(
+        a.getNdv() >= 0 ? a.getNdv() : 0,
+        b.getNdv() >= 0 ? b.getNdv() : 0);
+    if (a.getNdv() < 0 && b.getNdv() < 0) {
+      ndv = -1;
+    }
+
+    StatConfidence conf = weakest(weakest(a.getNdvConfidence(), b.getNdvConfidence()),
+        StatConfidence.ESTIMATED);
+
+    boolean minTrusted = a.isMinTrusted() && b.isMinTrusted();
+
+    Comparable<?> minVal = mergeMin(a.getMinValue(), b.getMinValue());
+    Comparable<?> maxVal = mergeMax(a.getMaxValue(), b.getMaxValue());
+
+    double avgBytes = mergeDouble(a.getAvgBytesPerValue(), b.getAvgBytesPerValue(), true);
+    double nullFraction = mergeDouble(a.getNullFraction(), b.getNullFraction(), true);
+
+    return ColumnStatistics.builder()
+        .columnName(columnName)
+        .ndv(ndv, conf)
+        .minValue(minVal)
+        .maxValue(maxVal)
+        .minTrusted(minTrusted)
+        .avgBytesPerValue(avgBytes)
+        .nullFraction(nullFraction)
+        .build();
+  }
+
+  /// Returns the numerically-aware minimum of two [Comparable] values.
+  /// When both values parse as numbers, uses numeric comparison; otherwise lexical.
+  /// Returns `null` only if both inputs are `null`.
+  @Nullable
+  private static Comparable<?> mergeMin(@Nullable Comparable<?> a, @Nullable Comparable<?> b) {
+    if (a == null) {
+      return b;
+    }
+    if (b == null) {
+      return a;
+    }
+    return compareMinMax(a, b) <= 0 ? a : b;
+  }
+
+  /// Returns the numerically-aware maximum of two [Comparable] values.
+  /// When both values parse as numbers, uses numeric comparison; otherwise lexical.
+  /// Returns `null` only if both inputs are `null`.
+  @Nullable
+  private static Comparable<?> mergeMax(@Nullable Comparable<?> a, @Nullable Comparable<?> b) {
+    if (a == null) {
+      return b;
+    }
+    if (b == null) {
+      return a;
+    }
+    return compareMinMax(a, b) >= 0 ? a : b;
+  }
+
+  /// Compares two [Comparable] values numerically when both parse as numbers, lexically otherwise.
+  /// Returns negative, zero, or positive like [Comparator#compare].
+  private static int compareMinMax(Comparable<?> a, Comparable<?> b) {
+    Double da = toDouble(a);
+    Double db = toDouble(b);
+    if (da != null && db != null) {
+      return Double.compare(da, db);
+    }
+    // Fall back to string comparison
+    return a.toString().compareTo(b.toString());
+  }
+
+  /// Attempts to parse the value as a double. Returns `null` if it cannot be parsed.
+  @Nullable
+  private static Double toDouble(Comparable<?> value) {
+    if (value instanceof Number) {
+      return ((Number) value).doubleValue();
+    }
+    try {
+      return Double.parseDouble(value.toString());
+    } catch (NumberFormatException e) {
+      return null;
+    }
+  }
+
+  /// Merges two double metric fields (`-1` means unknown).
+  /// When `useMax` is true, returns the max of the two known values; otherwise the min.
+  private static double mergeDouble(double a, double b, boolean useMax) {
+    if (a < 0 && b < 0) {
+      return -1;
+    }
+    if (a < 0) {
+      return b;
+    }
+    if (b < 0) {
+      return a;
+    }
+    return useMax ? Math.max(a, b) : Math.min(a, b);
   }
 
   /// Returns the weaker of two confidence levels.

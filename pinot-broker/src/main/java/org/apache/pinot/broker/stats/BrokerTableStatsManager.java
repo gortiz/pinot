@@ -38,6 +38,7 @@ import org.apache.helix.model.IdealState;
 import org.apache.helix.zookeeper.datamodel.ZNRecord;
 import org.apache.pinot.broker.routing.segmentmetadata.SegmentZkMetadataFetchListener;
 import org.apache.pinot.common.metadata.segment.SegmentZKMetadata;
+import org.apache.pinot.query.planner.spi.stats.ColumnStatistics;
 import org.apache.pinot.query.planner.spi.stats.TableStatistics;
 import org.apache.pinot.spi.config.table.TableConfig;
 import org.apache.pinot.spi.utils.CommonConstants.Segment.Realtime.Status;
@@ -214,6 +215,23 @@ public class BrokerTableStatsManager implements Closeable {
       return null;
     }
     return _resolver.getTableStats(tableName);
+  }
+
+  /// Returns per-column statistics for the given table name and column, or `null` if unavailable.
+  ///
+  /// Accepts both suffixed physical names (`foo_OFFLINE` / `foo_REALTIME`) and raw logical
+  /// names (`foo`). For raw names, merges offline and realtime stats conservatively (widened
+  /// min/max range, max NDV, AND minTrusted, weakest confidence). Any store error is logged at
+  /// WARN and `null` is returned.
+  ///
+  /// @param tableName raw table name or fully-qualified name with type suffix
+  /// @param columnName column name to look up
+  @Nullable
+  public ColumnStatistics getColumnStats(String tableName, String columnName) {
+    if (!_enabled) {
+      return null;
+    }
+    return _resolver.getColumnStats(tableName, columnName);
   }
 
   /// Returns an estimate of the number of rows in the given time range, or an empty optional if

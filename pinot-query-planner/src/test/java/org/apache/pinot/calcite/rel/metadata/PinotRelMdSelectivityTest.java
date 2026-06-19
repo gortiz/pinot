@@ -25,6 +25,7 @@ import org.apache.calcite.rel.core.Filter;
 import org.apache.calcite.rel.core.TableScan;
 import org.apache.calcite.rel.metadata.RelMdUtil;
 import org.apache.calcite.rel.metadata.RelMetadataQuery;
+import org.apache.calcite.sql.SqlKind;
 import org.apache.pinot.common.config.provider.TableCache;
 import org.apache.pinot.core.routing.MockRoutingManagerFactory;
 import org.apache.pinot.query.QueryEnvironment;
@@ -328,6 +329,253 @@ public class PinotRelMdSelectivityTest {
       assertEquals(pinotSel, defaultSel, DELTA,
           "NoOp provider must yield the same selectivity as Calcite defaults");
     }
+  }
+
+  // --------------------------------------------------------------------------
+  // Tests: rangeSelectivity static helper
+  // --------------------------------------------------------------------------
+
+  /// `col > 75` with range [0,100] → (100-75)/(100-0) = 0.25.
+  @Test
+  public void testRangeSelectivityGreaterThan() {
+    double sel = PinotRelMdSelectivity.rangeSelectivity(
+        SqlKind.GREATER_THAN, 75.0, 0.0, 100.0, true, false);
+    assertEquals(sel, 0.25, DELTA);
+  }
+
+  /// `col < 25` with range [0,100] → (25-0)/(100-0) = 0.25.
+  @Test
+  public void testRangeSelectivityLessThan() {
+    double sel = PinotRelMdSelectivity.rangeSelectivity(
+        SqlKind.LESS_THAN, 25.0, 0.0, 100.0, true, false);
+    assertEquals(sel, 0.25, DELTA);
+  }
+
+  /// Value entirely above [lo,hi]: `col > 200` with range [0,100] → clamped to 0.0.
+  @Test
+  public void testRangeSelectivityValueAboveMax() {
+    double sel = PinotRelMdSelectivity.rangeSelectivity(
+        SqlKind.GREATER_THAN, 200.0, 0.0, 100.0, true, false);
+    assertEquals(sel, 0.0, DELTA);
+  }
+
+  /// Value entirely below [lo,hi]: `col < -10` with range [0,100] → clamped to 0.0.
+  @Test
+  public void testRangeSelectivityValueBelowMin() {
+    double sel = PinotRelMdSelectivity.rangeSelectivity(
+        SqlKind.LESS_THAN, -10.0, 0.0, 100.0, true, false);
+    assertEquals(sel, 0.0, DELTA);
+  }
+
+  /// Value entirely below [lo,hi]: `col > -10` with range [0,100] → clamped to 1.0.
+  @Test
+  public void testRangeSelectivityGreaterThanBelowRange() {
+    double sel = PinotRelMdSelectivity.rangeSelectivity(
+        SqlKind.GREATER_THAN, -10.0, 0.0, 100.0, true, false);
+    assertEquals(sel, 1.0, DELTA);
+  }
+
+  /// Degenerate range (hi <= lo) falls back to FALLBACK_RANGE_SELECTIVITY = 0.25.
+  @Test
+  public void testRangeSelectivityDegenerateRange() {
+    double sel = PinotRelMdSelectivity.rangeSelectivity(
+        SqlKind.GREATER_THAN, 50.0, 100.0, 50.0, true, false);
+    assertEquals(sel, 0.25, DELTA);
+  }
+
+  /// minTrusted=false, non-timestamp, positive max: effective lo = -|max| = -100 for max=100.
+  /// `col > 0` with effective range [-100, 100] → (100-0)/(100-(-100)) = 0.5.
+  @Test
+  public void testRangeSelectivityNullSentinelNonTimestamp() {
+    double sel = PinotRelMdSelectivity.rangeSelectivity(
+        SqlKind.GREATER_THAN, 0.0, Integer.MIN_VALUE, 100.0, false, false);
+    assertEquals(sel, 0.5, DELTA);
+  }
+
+  /// minTrusted=false, non-timestamp, max <= 0 (all-negative column):
+  /// no reliable lower bound → falls back to FALLBACK_RANGE_SELECTIVITY = 0.25.
+  @Test
+  public void testRangeSelectivityNullSentinelNonTimestampAllNegative() {
+    double sel = PinotRelMdSelectivity.rangeSelectivity(
+        SqlKind.GREATER_THAN, -50.0, Integer.MIN_VALUE, -10.0, false, false);
+    assertEquals(sel, 0.25, DELTA);
+  }
+
+  /// minTrusted=false, timestamp: effective lo = 0.
+  /// `col > 50` with effective range [0, 100] → (100-50)/(100-0) = 0.5.
+  @Test
+  public void testRangeSelectivityNullSentinelTimestamp() {
+    double sel = PinotRelMdSelectivity.rangeSelectivity(
+        SqlKind.GREATER_THAN, 50.0, Long.MIN_VALUE, 100.0, false, true);
+    assertEquals(sel, 0.5, DELTA);
+  }
+
+  // --------------------------------------------------------------------------
+  // Tests: range selectivity end-to-end through Calcite metadata query
+  // --------------------------------------------------------------------------
+
+  /// An integer column with min=0, max=100, NDV=50 (EXACT). A predicate `userId > 75`
+  /// should yield selectivity = (100-75)/(100-0) = 0.25.
+  @Test
+  public void testNumericRangeGreaterThanSelectivity() {
+    PinotStatisticsProvider provider = buildProviderWithColStats(
+        NON_TIME_COL, 50L, StatConfidence.EXACT, 0.0, 100.0, true);
+    QueryEnvironment env = buildEnv(buildSchema(), provider);
+
+    try (QueryEnvironment.CompiledQuery compiled = env.compile(
+        "SELECT " + NON_TIME_COL + " FROM " + TABLE_NAME
+            + " WHERE " + NON_TIME_COL + " > 75")) {
+      RelNode relNode = compiled.getRelNode();
+      Filter filter = findFirstFilter(relNode);
+      assertNotNull(filter);
+      RelMetadataQuery mq = filter.getCluster().getMetadataQuery();
+      Double sel = mq.getSelectivity(filter, null);
+      assertNotNull(sel);
+      assertEquals(sel, 0.25, DELTA,
+          "Range selectivity must equal (max-v)/(max-min) for col > v");
+    }
+  }
+
+  /// `userId < 25` with range [0,100] → selectivity = (25-0)/(100-0) = 0.25.
+  @Test
+  public void testNumericRangeLessThanSelectivity() {
+    PinotStatisticsProvider provider = buildProviderWithColStats(
+        NON_TIME_COL, 50L, StatConfidence.EXACT, 0.0, 100.0, true);
+    QueryEnvironment env = buildEnv(buildSchema(), provider);
+
+    try (QueryEnvironment.CompiledQuery compiled = env.compile(
+        "SELECT " + NON_TIME_COL + " FROM " + TABLE_NAME
+            + " WHERE " + NON_TIME_COL + " < 25")) {
+      RelNode relNode = compiled.getRelNode();
+      Filter filter = findFirstFilter(relNode);
+      assertNotNull(filter);
+      RelMetadataQuery mq = filter.getCluster().getMetadataQuery();
+      Double sel = mq.getSelectivity(filter, null);
+      assertNotNull(sel);
+      assertEquals(sel, 0.25, DELTA,
+          "Range selectivity must equal (v-min)/(max-min) for col < v");
+    }
+  }
+
+  /// BETWEEN on an integer column: Calcite's optimizer rewrites `userId >= 25 AND userId <= 75`
+  /// into a single SEARCH(col, Sarg[25..75]) node. The time-column SEARCH path does not apply
+  /// (this is a non-time column) and we do not currently handle non-time Sarg ranges, so the
+  /// predicate falls through to RelMdUtil.guessSelectivity — which returns 0.25.
+  /// This test pins the current behaviour (falls back to default guess).
+  @Test
+  public void testNumericBetweenFallsBackToDefaultForSarg() {
+    PinotStatisticsProvider provider = buildProviderWithColStats(
+        NON_TIME_COL, 50L, StatConfidence.EXACT, 0.0, 100.0, true);
+    QueryEnvironment env = buildEnv(buildSchema(), provider);
+
+    try (QueryEnvironment.CompiledQuery compiled = env.compile(
+        "SELECT " + NON_TIME_COL + " FROM " + TABLE_NAME
+            + " WHERE " + NON_TIME_COL + " >= 25 AND " + NON_TIME_COL + " <= 75")) {
+      RelNode relNode = compiled.getRelNode();
+      Filter filter = findFirstFilter(relNode);
+      assertNotNull(filter);
+      RelMetadataQuery mq = filter.getCluster().getMetadataQuery();
+      Double sel = mq.getSelectivity(filter, null);
+      assertNotNull(sel);
+      // Calcite converts >= / <= on integer column to a SEARCH/Sarg node; the non-time Sarg
+      // path is not handled for range stats → falls back to RelMdUtil.guessSelectivity = 0.25.
+      Double defaultSel = RelMdUtil.guessSelectivity(filter.getCondition());
+      assertEquals(sel, defaultSel, DELTA,
+          "Integer BETWEEN converted to SEARCH/Sarg falls back to Calcite default selectivity");
+    }
+  }
+
+  /// When confidence is LOW, range selectivity must fall back to the default guess.
+  @Test
+  public void testRangeSelectivityFallsBackForLowConfidence() {
+    PinotStatisticsProvider provider = buildProviderWithColStats(
+        NON_TIME_COL, 50L, StatConfidence.LOW, 0.0, 100.0, true);
+    QueryEnvironment env = buildEnv(buildSchema(), provider);
+
+    try (QueryEnvironment.CompiledQuery compiled = env.compile(
+        "SELECT " + NON_TIME_COL + " FROM " + TABLE_NAME
+            + " WHERE " + NON_TIME_COL + " > 50")) {
+      RelNode relNode = compiled.getRelNode();
+      Filter filter = findFirstFilter(relNode);
+      assertNotNull(filter);
+      RelMetadataQuery mq = filter.getCluster().getMetadataQuery();
+      Double sel = mq.getSelectivity(filter, null);
+      assertNotNull(sel);
+      Double defaultSel = RelMdUtil.guessSelectivity(filter.getCondition());
+      assertEquals(sel, defaultSel, DELTA,
+          "LOW confidence must fall back to Calcite default selectivity");
+    }
+  }
+
+  /// A STRING column range should fall back to the default guess (no numeric range stats).
+  @Test
+  public void testRangeSelectivityFallsBackForStringColumn() {
+    // Build a schema where NON_TIME_COL is STRING
+    Schema stringSchema = new Schema.SchemaBuilder()
+        .addSingleValueDimension(NON_TIME_COL, FieldSpec.DataType.STRING, "")
+        .addDateTime(TIME_COL, FieldSpec.DataType.LONG, "1:MILLISECONDS:EPOCH", "1:HOURS")
+        .setSchemaName(TABLE_NAME)
+        .build();
+    PinotStatisticsProvider provider = buildProviderWithColStats(
+        NON_TIME_COL, 50L, StatConfidence.EXACT, 0.0, 100.0, true);
+    QueryEnvironment env = buildEnv(stringSchema, provider);
+
+    try (QueryEnvironment.CompiledQuery compiled = env.compile(
+        "SELECT " + NON_TIME_COL + " FROM " + TABLE_NAME
+            + " WHERE " + NON_TIME_COL + " > 'abc'")) {
+      RelNode relNode = compiled.getRelNode();
+      Filter filter = findFirstFilter(relNode);
+      assertNotNull(filter);
+      RelMetadataQuery mq = filter.getCluster().getMetadataQuery();
+      Double sel = mq.getSelectivity(filter, null);
+      assertNotNull(sel);
+      Double defaultSel = RelMdUtil.guessSelectivity(filter.getCondition());
+      assertEquals(sel, defaultSel, DELTA,
+          "STRING column range must fall back to Calcite default selectivity");
+    }
+  }
+
+  /// Equality selectivity is unchanged by the range logic — NDV path still yields 1/NDV.
+  @Test
+  public void testEqualitySelectivityUnchangedWithMinMaxPresent() {
+    long ndv = 50L;
+    PinotStatisticsProvider provider = buildProviderWithColStats(
+        NON_TIME_COL, ndv, StatConfidence.EXACT, 0.0, 100.0, true);
+    QueryEnvironment env = buildEnv(buildSchema(), provider);
+
+    try (QueryEnvironment.CompiledQuery compiled = env.compile(
+        "SELECT " + NON_TIME_COL + " FROM " + TABLE_NAME
+            + " WHERE " + NON_TIME_COL + " = 42")) {
+      RelNode relNode = compiled.getRelNode();
+      Filter filter = findFirstFilter(relNode);
+      assertNotNull(filter);
+      RelMetadataQuery mq = filter.getCluster().getMetadataQuery();
+      Double sel = mq.getSelectivity(filter, null);
+      assertNotNull(sel);
+      assertEquals(sel, 1.0 / ndv, DELTA,
+          "Equality selectivity must still use 1/NDV even when min/max are also present");
+    }
+  }
+
+  // --------------------------------------------------------------------------
+  // Test helpers for range selectivity
+  // --------------------------------------------------------------------------
+
+  /// Builds a mock provider with table stats (EXACT rowCount) and column stats with given params.
+  private static PinotStatisticsProvider buildProviderWithColStats(
+      String colName, long ndv, StatConfidence conf, double min, double max, boolean minTrusted) {
+    PinotStatisticsProvider provider = mock(PinotStatisticsProvider.class);
+    when(provider.getTableStatistics(TABLE_NAME)).thenReturn(
+        TableStatistics.builder().rowCount(ROW_COUNT, StatConfidence.EXACT).build());
+    when(provider.getColumnStatistics(TABLE_NAME, colName)).thenReturn(
+        ColumnStatistics.builder()
+            .columnName(colName)
+            .ndv(ndv, conf)
+            .minValue(min)
+            .maxValue(max)
+            .minTrusted(minTrusted)
+            .build());
+    return provider;
   }
 
   // --------------------------------------------------------------------------
