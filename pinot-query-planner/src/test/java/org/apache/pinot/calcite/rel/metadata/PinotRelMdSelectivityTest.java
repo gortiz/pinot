@@ -339,7 +339,7 @@ public class PinotRelMdSelectivityTest {
   @Test
   public void testRangeSelectivityGreaterThan() {
     double sel = PinotRelMdSelectivity.rangeSelectivity(
-        SqlKind.GREATER_THAN, 75.0, 0.0, 100.0, true, false);
+        SqlKind.GREATER_THAN, 75.0, 0.0, 100.0, true);
     assertEquals(sel, 0.25, DELTA);
   }
 
@@ -347,7 +347,7 @@ public class PinotRelMdSelectivityTest {
   @Test
   public void testRangeSelectivityLessThan() {
     double sel = PinotRelMdSelectivity.rangeSelectivity(
-        SqlKind.LESS_THAN, 25.0, 0.0, 100.0, true, false);
+        SqlKind.LESS_THAN, 25.0, 0.0, 100.0, true);
     assertEquals(sel, 0.25, DELTA);
   }
 
@@ -355,7 +355,7 @@ public class PinotRelMdSelectivityTest {
   @Test
   public void testRangeSelectivityValueAboveMax() {
     double sel = PinotRelMdSelectivity.rangeSelectivity(
-        SqlKind.GREATER_THAN, 200.0, 0.0, 100.0, true, false);
+        SqlKind.GREATER_THAN, 200.0, 0.0, 100.0, true);
     assertEquals(sel, 0.0, DELTA);
   }
 
@@ -363,7 +363,7 @@ public class PinotRelMdSelectivityTest {
   @Test
   public void testRangeSelectivityValueBelowMin() {
     double sel = PinotRelMdSelectivity.rangeSelectivity(
-        SqlKind.LESS_THAN, -10.0, 0.0, 100.0, true, false);
+        SqlKind.LESS_THAN, -10.0, 0.0, 100.0, true);
     assertEquals(sel, 0.0, DELTA);
   }
 
@@ -371,7 +371,7 @@ public class PinotRelMdSelectivityTest {
   @Test
   public void testRangeSelectivityGreaterThanBelowRange() {
     double sel = PinotRelMdSelectivity.rangeSelectivity(
-        SqlKind.GREATER_THAN, -10.0, 0.0, 100.0, true, false);
+        SqlKind.GREATER_THAN, -10.0, 0.0, 100.0, true);
     assertEquals(sel, 1.0, DELTA);
   }
 
@@ -379,35 +379,26 @@ public class PinotRelMdSelectivityTest {
   @Test
   public void testRangeSelectivityDegenerateRange() {
     double sel = PinotRelMdSelectivity.rangeSelectivity(
-        SqlKind.GREATER_THAN, 50.0, 100.0, 50.0, true, false);
+        SqlKind.GREATER_THAN, 50.0, 100.0, 50.0, true);
     assertEquals(sel, 0.25, DELTA);
   }
 
-  /// minTrusted=false, non-timestamp, positive max: effective lo = -|max| = -100 for max=100.
+  /// minTrusted=false, positive max: effective lo = -|max| = -100 for max=100.
   /// `col > 0` with effective range [-100, 100] → (100-0)/(100-(-100)) = 0.5.
   @Test
-  public void testRangeSelectivityNullSentinelNonTimestamp() {
+  public void testRangeSelectivityNullSentinelSymmetric() {
     double sel = PinotRelMdSelectivity.rangeSelectivity(
-        SqlKind.GREATER_THAN, 0.0, Integer.MIN_VALUE, 100.0, false, false);
+        SqlKind.GREATER_THAN, 0.0, Integer.MIN_VALUE, 100.0, false);
     assertEquals(sel, 0.5, DELTA);
   }
 
-  /// minTrusted=false, non-timestamp, max <= 0 (all-negative column):
+  /// minTrusted=false, max <= 0 (all-negative column):
   /// no reliable lower bound → falls back to FALLBACK_RANGE_SELECTIVITY = 0.25.
   @Test
-  public void testRangeSelectivityNullSentinelNonTimestampAllNegative() {
+  public void testRangeSelectivityNullSentinelAllNegative() {
     double sel = PinotRelMdSelectivity.rangeSelectivity(
-        SqlKind.GREATER_THAN, -50.0, Integer.MIN_VALUE, -10.0, false, false);
+        SqlKind.GREATER_THAN, -50.0, Integer.MIN_VALUE, -10.0, false);
     assertEquals(sel, 0.25, DELTA);
-  }
-
-  /// minTrusted=false, timestamp: effective lo = 0.
-  /// `col > 50` with effective range [0, 100] → (100-50)/(100-0) = 0.5.
-  @Test
-  public void testRangeSelectivityNullSentinelTimestamp() {
-    double sel = PinotRelMdSelectivity.rangeSelectivity(
-        SqlKind.GREATER_THAN, 50.0, Long.MIN_VALUE, 100.0, false, true);
-    assertEquals(sel, 0.5, DELTA);
   }
 
   // --------------------------------------------------------------------------
@@ -532,6 +523,36 @@ public class PinotRelMdSelectivityTest {
       Double defaultSel = RelMdUtil.guessSelectivity(filter.getCondition());
       assertEquals(sel, defaultSel, DELTA,
           "STRING column range must fall back to Calcite default selectivity");
+    }
+  }
+
+  /// A TIMESTAMP non-time column range must fall back to the default guess: TIMESTAMP is no longer
+  /// treated as a numeric type for min/max range selectivity (only INT/LONG/FLOAT/DOUBLE are).
+  @Test
+  public void testRangeSelectivityFallsBackForTimestampColumn() {
+    // NON_TIME_COL is TIMESTAMP; a separate LONG datetime column remains the millis time column,
+    // so the time-range path does not capture this predicate.
+    Schema timestampSchema = new Schema.SchemaBuilder()
+        .addSingleValueDimension(NON_TIME_COL, FieldSpec.DataType.TIMESTAMP, 0L)
+        .addDateTime(TIME_COL, FieldSpec.DataType.LONG, "1:MILLISECONDS:EPOCH", "1:HOURS")
+        .setSchemaName(TABLE_NAME)
+        .build();
+    PinotStatisticsProvider provider = buildProviderWithColStats(
+        NON_TIME_COL, 50L, StatConfidence.EXACT, 0.0, 100.0, true);
+    QueryEnvironment env = buildEnv(timestampSchema, provider);
+
+    try (QueryEnvironment.CompiledQuery compiled = env.compile(
+        "SELECT " + NON_TIME_COL + " FROM " + TABLE_NAME
+            + " WHERE " + NON_TIME_COL + " > 50")) {
+      RelNode relNode = compiled.getRelNode();
+      Filter filter = findFirstFilter(relNode);
+      assertNotNull(filter);
+      RelMetadataQuery mq = filter.getCluster().getMetadataQuery();
+      Double sel = mq.getSelectivity(filter, null);
+      assertNotNull(sel);
+      Double defaultSel = RelMdUtil.guessSelectivity(filter.getCondition());
+      assertEquals(sel, defaultSel, DELTA,
+          "TIMESTAMP column range must fall back to Calcite default selectivity");
     }
   }
 

@@ -72,7 +72,7 @@ import org.slf4j.LoggerFactory;
 /// | `ndv` | `cardinality` (per-segment, from server) |
 /// | `minValue`/`maxValue` | JSON strings as-is |
 /// | `avgBytesPerValue` | fixed-width: type width; variable: `(shortest+longest)/2`; MV: × avg entries/row |
-/// | `minTrusted` | `false` when column is nullable AND `minValue` equals the type's MIN sentinel |
+/// | `minTrusted` | `false` if `minMaxValueInvalid`, `minValue` absent, or (nullable and min is MIN sentinel) |
 /// | `nullFraction` | `-1` (endpoint does not expose null counts in v1) |
 ///
 /// ### Thread-safety
@@ -112,7 +112,7 @@ public class BrokerPullColumnStatsSource implements ColumnStatsSource, Closeable
   @Override
   public void close()
       throws IOException {
-    _executor.shutdown();
+    _executor.shutdownNow();
     try {
       _connectionManager.close();
     } catch (Exception e) {
@@ -168,21 +168,82 @@ public class BrokerPullColumnStatsSource implements ColumnStatsSource, Closeable
     CompletionService<MultiHttpRequestResponse> completionService =
         new MultiHttpRequest(_executor, _connectionManager).executeGet(urls, null, _fetchTimeoutMs);
 
-    // Parse responses — accumulate per segment; first win on duplicates (replica dedup)
-    Map<String, List<SegmentColumnStatsRow>> result = new HashMap<>();
+    // Collect each server's response into a transport-agnostic holder, then merge with the
+    // package-private helper (which is unit-tested without a live server / network).
+    List<ServerResult> serverResults = new ArrayList<>(urls.size());
     for (int i = 0; i < urls.size(); i++) {
       MultiHttpRequestResponse httpResponse = null;
       try {
         httpResponse = completionService.take().get();
-        int statusCode = httpResponse.getResponse().getCode();
         String url = httpResponse.getURI().toString();
-        if (statusCode >= 300) {
-          LOGGER.warn("Server {} returned HTTP {} for column-stats request; skipping",
-              urlToServer.getOrDefault(url, url), statusCode);
-          continue;
+        String server = urlToServer.getOrDefault(url, url);
+        int statusCode = httpResponse.getResponse().getCode();
+        String body = statusCode < 300 ? EntityUtils.toString(httpResponse.getResponse().getEntity()) : null;
+        serverResults.add(new ServerResult(server, statusCode, body, null));
+      } catch (Exception e) {
+        serverResults.add(new ServerResult("<unknown>", -1, null, e));
+      } finally {
+        if (httpResponse != null) {
+          try {
+            httpResponse.close();
+          } catch (Exception ignored) {
+            // ignore close errors
+          }
         }
-        String body = EntityUtils.toString(httpResponse.getResponse().getEntity());
-        JsonNode root = JsonUtils.stringToJsonNode(body);
+      }
+    }
+    return mergeServerResults(serverResults, schema, tableNameWithType);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Response merge — package-visible for unit testing without a live server
+  // ---------------------------------------------------------------------------
+
+  /// Transport-agnostic holder for a single server's column-stats response.
+  ///
+  /// @param serverId   server identifier for logging; never null, but may be the raw request URL
+  ///                    when the instance ID is unknown, or `"<unknown>"` for pre-response errors
+  /// @param statusCode HTTP status code, or `-1` when the request failed before a response
+  /// @param body       response body (a `Map<segmentName, segmentMetadataJson>`), or `null`
+  ///                    when the request errored or returned a non-2xx/3xx status
+  /// @param error      the exception thrown while fetching the response, or `null` on success
+  record ServerResult(String serverId, int statusCode, @Nullable String body, @Nullable Exception error) {
+  }
+
+  /// Merges the per-server responses into a `Map<segmentName, List<SegmentColumnStatsRow>>`.
+  ///
+  /// Merge semantics:
+  /// - Error results (non-null `error`) are logged at WARN and skipped; other servers still merge.
+  /// - Status codes `>= 300` (any non-2xx response) are logged at WARN and skipped.
+  /// - For successful responses, the body is parsed as `Map<segmentName, segmentMetadataJson>`;
+  ///   a malformed body is logged at WARN and skipped while other servers still merge.
+  /// - The first non-error response for a segment wins (replica dedup); subsequent replicas are
+  ///   skipped, so ordering is stable across identical replicas.
+  /// - Segments that parse to an empty row list are omitted.
+  ///
+  /// @param serverResults    per-server response holders (order is processing order; first wins)
+  /// @param schema           table schema for null-sentinel detection (may be null)
+  /// @param tableNameWithType table name, used only for log context
+  /// @return map from segment name to its parsed per-column rows
+  static Map<String, List<SegmentColumnStatsRow>> mergeServerResults(List<ServerResult> serverResults,
+      @Nullable Schema schema, String tableNameWithType) {
+    Map<String, List<SegmentColumnStatsRow>> result = new HashMap<>();
+    for (ServerResult sr : serverResults) {
+      if (sr.error() != null) {
+        LOGGER.warn("Failed to fetch/parse column stats response from server {} for table {}; skipping: {}",
+            sr.serverId(), tableNameWithType, sr.error().getMessage());
+        continue;
+      }
+      if (sr.statusCode() >= 300) {
+        LOGGER.warn("Server {} returned HTTP {} for column-stats request; skipping", sr.serverId(),
+            sr.statusCode());
+        continue;
+      }
+      if (sr.body() == null) {
+        continue;
+      }
+      try {
+        JsonNode root = JsonUtils.stringToJsonNode(sr.body());
         // root is Map<segmentName, segmentMetadataJson>
         Iterator<Map.Entry<String, JsonNode>> fields = root.fields();
         while (fields.hasNext()) {
@@ -192,23 +253,14 @@ public class BrokerPullColumnStatsSource implements ColumnStatsSource, Closeable
             // Already obtained from another replica — skip
             continue;
           }
-          JsonNode segNode = field.getValue();
-          List<SegmentColumnStatsRow> rows = parseSegmentStats(segmentName, segNode, schema);
+          List<SegmentColumnStatsRow> rows = parseSegmentStats(segmentName, field.getValue(), schema);
           if (!rows.isEmpty()) {
             result.put(segmentName, rows);
           }
         }
       } catch (Exception e) {
-        LOGGER.warn("Failed to fetch/parse column stats response for table {}; skipping: {}",
-            tableNameWithType, e.getMessage());
-      } finally {
-        if (httpResponse != null) {
-          try {
-            httpResponse.close();
-          } catch (Exception ignored) {
-            // ignore close errors
-          }
-        }
+        LOGGER.warn("Failed to parse column stats response from server {} for table {}; skipping: {}",
+            sr.serverId(), tableNameWithType, e.getMessage());
       }
     }
     return result;
@@ -306,8 +358,13 @@ public class BrokerPullColumnStatsSource implements ColumnStatsSource, Closeable
     // avgBytesPerValue
     double avgBytesPerValue = computeAvgBytes(storedType, singleValue, totalDocs, totalEntries, colNode);
 
+    // minMaxValueInvalid — ColumnMetadata.isMinMaxValueInvalid() is serialized by Jackson as
+    // "minMaxValueInvalid"; when true the server has flagged min/max as unreliable.
+    boolean minMaxValueInvalid = colNode.has("minMaxValueInvalid")
+        && colNode.get("minMaxValueInvalid").asBoolean(false);
+
     // minTrusted
-    boolean minTrusted = computeMinTrusted(columnName, minValue, storedType, schema);
+    boolean minTrusted = computeMinTrusted(columnName, minValue, storedType, schema, minMaxValueInvalid);
 
     // nullFraction — v1: unknown
     double nullFraction = -1.0;
@@ -414,14 +471,20 @@ public class BrokerPullColumnStatsSource implements ColumnStatsSource, Closeable
 
   /// Returns `true` when the minimum value is trustworthy for segment pruning.
   ///
-  /// `minTrusted` is `false` only when:
-  /// 1. The column is nullable (as reported by the schema), AND
-  /// 2. The stored min equals the type's minimum representable value (the null-sentinel default).
+  /// `minTrusted` is `false` when ANY of the following holds:
+  /// 1. The server flagged the column's min/max as invalid (`minMaxValueInvalid == true`), OR
+  /// 2. The stored min value is absent/null (no usable bound), OR
+  /// 3. The column is nullable (as reported by the schema) AND the stored min equals the type's
+  ///    minimum representable value (the null-sentinel default).
   ///
   /// See memory note: Nulls skew Pinot min/max metadata.
   static boolean computeMinTrusted(String columnName, @Nullable String minValue, @Nullable DataType storedType,
-      @Nullable Schema schema) {
-    if (minValue == null || storedType == null) {
+      @Nullable Schema schema, boolean minMaxValueInvalid) {
+    if (minMaxValueInvalid || minValue == null) {
+      // Server flagged min/max as unreliable, or no min value is present — cannot be trusted.
+      return false;
+    }
+    if (storedType == null) {
       return true;
     }
     // Check if the column is nullable according to the schema

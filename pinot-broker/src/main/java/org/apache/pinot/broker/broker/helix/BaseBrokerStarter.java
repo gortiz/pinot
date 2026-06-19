@@ -870,7 +870,11 @@ public abstract class BaseBrokerStarter implements ServiceStartable {
       // (pulls are debounced by refreshIntervalMs; _tableCache is initialized synchronously
       // before broker startup completes).
       columnStatsSource = new BrokerPullColumnStatsSource(
-          Executors.newCachedThreadPool(),
+          Executors.newCachedThreadPool(r -> {
+            Thread t = new Thread(r, "broker-column-stats-fanout");
+            t.setDaemon(true);
+            return t;
+          }),
           PoolingHttpClientConnectionManagerHelper.createWithSocketFactory(),
           segmentProvider,
           ignoredTableName -> _tableCache,

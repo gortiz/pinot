@@ -22,6 +22,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import java.util.List;
+import java.util.Map;
 import javax.annotation.Nullable;
 import org.apache.pinot.spi.data.DimensionFieldSpec;
 import org.apache.pinot.spi.data.FieldSpec;
@@ -49,7 +50,7 @@ public class BrokerPullColumnStatsSourceTest {
     ObjectNode segNode = MAPPER.createObjectNode();
     segNode.put("totalDocs", 1000L);
     ArrayNode columns = MAPPER.createArrayNode();
-    columns.add(columnNode("age", "INT", 100, 5, 100, 1000, 1000, true, null, null));
+    columns.add(columnNode("age", "INT", 100, 5, 100, 1000, 1000, true, "1", "120"));
     segNode.set("columns", columns);
 
     List<SegmentColumnStatsRow> rows = BrokerPullColumnStatsSource.parseSegmentStats(SEG, segNode, null);
@@ -59,7 +60,7 @@ public class BrokerPullColumnStatsSourceTest {
     assertEquals(row.getNdv(), 100);
     // INT fixed width = 4
     assertEquals(row.getAvgBytesPerValue(), 4.0, 0.001);
-    assertTrue(row.isMinTrusted()); // no schema → defaults true
+    assertTrue(row.isMinTrusted()); // real min value, no schema → defaults true
     assertEquals(row.getNullFraction(), -1.0);
   }
 
@@ -212,7 +213,7 @@ public class BrokerPullColumnStatsSourceTest {
     Schema schema = new Schema.SchemaBuilder().addField(fieldSpec).build();
     // Even if minValue is Integer.MIN_VALUE, non-nullable column → trusted
     assertTrue(BrokerPullColumnStatsSource.computeMinTrusted("age",
-        String.valueOf(Integer.MIN_VALUE), DataType.INT, schema));
+        String.valueOf(Integer.MIN_VALUE), DataType.INT, schema, false));
   }
 
   @Test
@@ -220,26 +221,146 @@ public class BrokerPullColumnStatsSourceTest {
     Schema schema = buildNullableIntSchema("score");
     // nullable column AND min = Integer.MIN_VALUE → not trusted
     assertFalse(BrokerPullColumnStatsSource.computeMinTrusted("score",
-        String.valueOf(Integer.MIN_VALUE), DataType.INT, schema));
+        String.valueOf(Integer.MIN_VALUE), DataType.INT, schema, false));
   }
 
   @Test
   public void testComputeMinTrustedNullableColumnNormalMinTrusted() {
     Schema schema = buildNullableIntSchema("score");
     // nullable column but min is a real value → trusted
-    assertTrue(BrokerPullColumnStatsSource.computeMinTrusted("score", "42", DataType.INT, schema));
+    assertTrue(BrokerPullColumnStatsSource.computeMinTrusted("score", "42", DataType.INT, schema, false));
   }
 
   @Test
   public void testComputeMinTrustedNoSchemaDefaultsTrue() {
     assertTrue(BrokerPullColumnStatsSource.computeMinTrusted("col", String.valueOf(Integer.MIN_VALUE),
-        DataType.INT, null));
+        DataType.INT, null, false));
   }
 
   @Test
-  public void testComputeMinTrustedNullMinValueTrue() {
+  public void testComputeMinTrustedNullMinValueNotTrusted() {
     Schema schema = buildNullableIntSchema("col");
-    assertTrue(BrokerPullColumnStatsSource.computeMinTrusted("col", null, DataType.INT, schema));
+    // No usable min value → cannot be trusted as a pruning bound.
+    assertFalse(BrokerPullColumnStatsSource.computeMinTrusted("col", null, DataType.INT, schema, false));
+  }
+
+  @Test
+  public void testComputeMinTrustedMinMaxValueInvalidNotTrusted() {
+    // Server flagged min/max invalid → not trusted even with a real, non-sentinel min and no schema.
+    assertFalse(BrokerPullColumnStatsSource.computeMinTrusted("col", "42", DataType.INT, null, true));
+  }
+
+  @Test
+  public void testParseSegmentStatsMinMaxValueInvalidUntrusted() {
+    ObjectNode segNode = MAPPER.createObjectNode();
+    segNode.put("totalDocs", 100L);
+    ArrayNode columns = MAPPER.createArrayNode();
+    // Real, non-sentinel min/max but server flagged them invalid → minTrusted must be false.
+    ObjectNode col = columnNode("age", "INT", 10, 4, 4, 100, 100, true, "5", "95");
+    col.put("minMaxValueInvalid", true);
+    columns.add(col);
+    segNode.set("columns", columns);
+
+    List<SegmentColumnStatsRow> rows = BrokerPullColumnStatsSource.parseSegmentStats(SEG, segNode, null);
+    assertEquals(rows.size(), 1);
+    assertFalse(rows.get(0).isMinTrusted(), "minMaxValueInvalid=true must force minTrusted=false");
+  }
+
+  // ---------------------------------------------------------------------------
+  // mergeServerResults — HTTP fan-out merge logic
+  // ---------------------------------------------------------------------------
+
+  @Test
+  public void testMergeServerResultsDedupFirstWins() {
+    // Two replicas return the same segment with different ndv; first one in the list wins.
+    String bodyA = oneColumnSegmentBody("seg1", "age", 100);
+    String bodyB = oneColumnSegmentBody("seg1", "age", 999);
+    List<BrokerPullColumnStatsSource.ServerResult> results = List.of(
+        new BrokerPullColumnStatsSource.ServerResult("Server_A", 200, bodyA, null),
+        new BrokerPullColumnStatsSource.ServerResult("Server_B", 200, bodyB, null));
+
+    Map<String, List<SegmentColumnStatsRow>> merged =
+        BrokerPullColumnStatsSource.mergeServerResults(results, null, "myTable_OFFLINE");
+    assertEquals(merged.size(), 1);
+    assertEquals(merged.get("seg1").get(0).getNdv(), 100, "First non-error response wins");
+  }
+
+  @Test
+  public void testMergeServerResults500And200Merge() {
+    // One server errors with HTTP 500, the other returns 200 → only the 200's segment is kept.
+    String body = oneColumnSegmentBody("seg2", "age", 42);
+    List<BrokerPullColumnStatsSource.ServerResult> results = List.of(
+        new BrokerPullColumnStatsSource.ServerResult("Server_A", 500, null, null),
+        new BrokerPullColumnStatsSource.ServerResult("Server_B", 200, body, null));
+
+    Map<String, List<SegmentColumnStatsRow>> merged =
+        BrokerPullColumnStatsSource.mergeServerResults(results, null, "myTable_OFFLINE");
+    assertEquals(merged.size(), 1);
+    assertEquals(merged.get("seg2").get(0).getNdv(), 42);
+  }
+
+  @Test
+  public void testMergeServerResultsExceptionAndOthersStillMerge() {
+    // One server threw an exception; others still merge.
+    String body = oneColumnSegmentBody("seg3", "age", 7);
+    List<BrokerPullColumnStatsSource.ServerResult> results = List.of(
+        new BrokerPullColumnStatsSource.ServerResult("Server_A", -1, null, new RuntimeException("boom")),
+        new BrokerPullColumnStatsSource.ServerResult("Server_B", 200, body, null));
+
+    Map<String, List<SegmentColumnStatsRow>> merged =
+        BrokerPullColumnStatsSource.mergeServerResults(results, null, "myTable_OFFLINE");
+    assertEquals(merged.size(), 1);
+    assertTrue(merged.containsKey("seg3"));
+  }
+
+  @Test
+  public void testMergeServerResultsEmptySegments() {
+    // A 200 response with an empty segment map yields no entries.
+    List<BrokerPullColumnStatsSource.ServerResult> results = List.of(
+        new BrokerPullColumnStatsSource.ServerResult("Server_A", 200, "{}", null));
+    Map<String, List<SegmentColumnStatsRow>> merged =
+        BrokerPullColumnStatsSource.mergeServerResults(results, null, "myTable_OFFLINE");
+    assertTrue(merged.isEmpty());
+  }
+
+  @Test
+  public void testMergeServerResultsNoServersEmpty() {
+    // When server resolution skips every server (e.g. no admin endpoint), the result list is empty.
+    Map<String, List<SegmentColumnStatsRow>> merged =
+        BrokerPullColumnStatsSource.mergeServerResults(List.of(), null, "myTable_OFFLINE");
+    assertTrue(merged.isEmpty());
+  }
+
+  @Test
+  public void testMergeServerResultsMalformedBodyOthersStillMerge() {
+    // A 200 response with unparseable JSON is skipped; the valid server still merges.
+    String validBody = oneColumnSegmentBody("seg4", "age", 11);
+    List<BrokerPullColumnStatsSource.ServerResult> results = List.of(
+        new BrokerPullColumnStatsSource.ServerResult("Server_A", 200, "not-json{", null),
+        new BrokerPullColumnStatsSource.ServerResult("Server_B", 200, validBody, null));
+
+    Map<String, List<SegmentColumnStatsRow>> merged =
+        BrokerPullColumnStatsSource.mergeServerResults(results, null, "myTable_OFFLINE");
+    assertEquals(merged.size(), 1);
+    assertEquals(merged.get("seg4").get(0).getNdv(), 11);
+  }
+
+  @Test
+  public void testMergeServerResultsMultiSegmentCrossServerDedup() {
+    // Server A hosts seg1 + seg2; server B hosts seg2 (duplicate, different ndv) + seg3.
+    // First win on the shared seg2; new segments from each server are all kept.
+    String bodyA = twoColumnSegmentsBody("seg1", 1, "seg2", 2);
+    String bodyB = twoColumnSegmentsBody("seg2", 999, "seg3", 3);
+    List<BrokerPullColumnStatsSource.ServerResult> results = List.of(
+        new BrokerPullColumnStatsSource.ServerResult("Server_A", 200, bodyA, null),
+        new BrokerPullColumnStatsSource.ServerResult("Server_B", 200, bodyB, null));
+
+    Map<String, List<SegmentColumnStatsRow>> merged =
+        BrokerPullColumnStatsSource.mergeServerResults(results, null, "myTable_OFFLINE");
+    assertEquals(merged.size(), 3);
+    assertEquals(merged.get("seg2").get(0).getNdv(), 2, "First server's seg2 wins");
+    assertTrue(merged.containsKey("seg1"));
+    assertTrue(merged.containsKey("seg3"));
   }
 
   // ---------------------------------------------------------------------------
@@ -298,6 +419,34 @@ public class BrokerPullColumnStatsSourceTest {
       n.put("maxValue", maxValue);
     }
     return n;
+  }
+
+  /// Builds a server-response body for a single segment with one INT column of the given ndv.
+  /// Shape: `{"<segment>": {"totalDocs": 100, "columns": [{...}]}}`.
+  private static String oneColumnSegmentBody(String segment, String column, int ndv) {
+    ObjectNode segNode = MAPPER.createObjectNode();
+    segNode.put("totalDocs", 100L);
+    ArrayNode columns = MAPPER.createArrayNode();
+    columns.add(columnNode(column, "INT", ndv, 4, 4, 100, 100, true, null, null));
+    segNode.set("columns", columns);
+    ObjectNode root = MAPPER.createObjectNode();
+    root.set(segment, segNode);
+    return root.toString();
+  }
+
+  /// Builds a server-response body containing two segments, each with one INT column of the
+  /// given ndv. Shape: `{"<seg1>": {...}, "<seg2>": {...}}`.
+  private static String twoColumnSegmentsBody(String seg1, int ndv1, String seg2, int ndv2) {
+    ObjectNode root = MAPPER.createObjectNode();
+    for (String[] pair : new String[][]{{seg1, String.valueOf(ndv1)}, {seg2, String.valueOf(ndv2)}}) {
+      ObjectNode segNode = MAPPER.createObjectNode();
+      segNode.put("totalDocs", 100L);
+      ArrayNode columns = MAPPER.createArrayNode();
+      columns.add(columnNode("age", "INT", Integer.parseInt(pair[1]), 4, 4, 100, 100, true, null, null));
+      segNode.set("columns", columns);
+      root.set(pair[0], segNode);
+    }
+    return root.toString();
   }
 
   /// Builds a schema with a single nullable INT dimension named `columnName`.

@@ -26,6 +26,7 @@ import org.apache.pinot.query.planner.spi.stats.StatConfidence;
 import org.apache.pinot.query.planner.spi.stats.TableStatistics;
 import org.apache.pinot.spi.config.table.TableConfig;
 import org.apache.pinot.spi.config.table.TableType;
+import org.apache.pinot.spi.config.table.UpsertConfig;
 import org.apache.pinot.spi.utils.builder.TableNameBuilder;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -341,9 +342,7 @@ public class LogicalTableStatsResolver {
         return false;
       }
       // Upsert: config present and mode != NONE
-      if (cfg.getUpsertConfig() != null
-          && cfg.getUpsertConfig().getMode()
-          != org.apache.pinot.spi.config.table.UpsertConfig.Mode.NONE) {
+      if (cfg.getUpsertConfig() != null && cfg.getUpsertConfig().getMode() != UpsertConfig.Mode.NONE) {
         return true;
       }
       // Dedup: config present and enabled

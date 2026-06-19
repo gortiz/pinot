@@ -294,9 +294,10 @@ public class BrokerTableStatsManager implements Closeable {
   /// Instances are called sequentially from the routing manager's per-table lock, so the
   /// `_persistedSegments` and `_pendingColumnSegments` sets need no additional synchronization.
   /// The background executor accesses `_statsStore` from a separate thread; [StatsStore] is
-  /// documented as single-writer/multi-reader safe, so concurrent upserts from two different
-  /// threads would be unsafe — but the single-thread executor ensures at most one column-pull
-  /// task runs at a time for any given table.
+  /// documented as single-writer/multi-reader safe. The shared single-thread executor does not
+  /// "protect" the store by itself — it simply serializes all background column-fetch work across
+  /// every table onto one thread, so at most one column-pull task runs at a time globally (and
+  /// therefore per table too), which keeps the store's single-writer contract satisfied.
   ///
   /// ### Failure isolation
   /// All [StatsStoreException] are caught; errors are logged at WARN and the listener

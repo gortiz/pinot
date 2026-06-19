@@ -46,6 +46,7 @@ import org.apache.pinot.query.planner.spi.stats.PinotStatisticsProvider;
 import org.apache.pinot.query.planner.spi.stats.StatConfidence;
 import org.apache.pinot.query.planner.spi.stats.TableStatistics;
 import org.apache.pinot.spi.data.FieldSpec;
+import org.apache.pinot.spi.data.Schema;
 
 
 /// Metadata handler that improves selectivity estimation for Pinot tables using
@@ -265,9 +266,8 @@ public class PinotRelMdSelectivity implements MetadataHandler<BuiltInMetadata.Se
       if (minD == null || maxD == null) {
         return RelMdUtil.guessSelectivity(conjunct);
       }
-      boolean isTimestamp = dataType == FieldSpec.DataType.TIMESTAMP;
       return rangeSelectivity(rangeRef._effectiveKind, rangeRef._literalValue,
-          minD, maxD, colStats.isMinTrusted(), isTimestamp);
+          minD, maxD, colStats.isMinTrusted());
     }
 
     return RelMdUtil.guessSelectivity(conjunct);
@@ -277,11 +277,7 @@ public class PinotRelMdSelectivity implements MetadataHandler<BuiltInMetadata.Se
   ///
   /// When `minTrusted` is false, the stored minimum may be polluted by a numeric null-sentinel
   /// (e.g. Integer.MIN_VALUE). In that case the effective lower bound is estimated as:
-  /// - `0.0` for TIMESTAMP columns (epoch millis are always non-negative; using the TIMESTAMP
-  ///   null-sentinel default of 0L as the effective lower bound is intentional: when the actual
-  ///   data starts at epoch 0 the estimate is exact; when it starts later the range is
-  ///   conservatively over-estimated, which is safe for cost purposes)
-  /// - `-|max|` for other numeric columns when `max > 0` (symmetric range assumption)
+  /// - `-|max|` when `max > 0` (symmetric range assumption)
   /// - falls back to `FALLBACK_RANGE_SELECTIVITY` when `max <= 0` and `minTrusted=false`
   ///   (all-negative column with untrusted min — no reliable range info)
   ///
@@ -292,15 +288,12 @@ public class PinotRelMdSelectivity implements MetadataHandler<BuiltInMetadata.Se
   /// @param min          stored column minimum
   /// @param max          stored column maximum
   /// @param minTrusted   whether the stored minimum is reliable
-  /// @param isTimestamp  true when the column is TIMESTAMP (non-negative domain)
   /// @return selectivity in [0.0, 1.0]
   static double rangeSelectivity(SqlKind kind, double v,
-      double min, double max, boolean minTrusted, boolean isTimestamp) {
+      double min, double max, boolean minTrusted) {
     double lo;
     if (minTrusted) {
       lo = min;
-    } else if (isTimestamp) {
-      lo = 0.0;
     } else if (max > 0) {
       lo = -Math.abs(max);
     } else {
@@ -370,10 +363,11 @@ public class PinotRelMdSelectivity implements MetadataHandler<BuiltInMetadata.Se
   /// Resolves the column data type from the scan schema.
   @Nullable
   private FieldSpec.DataType resolveColumnDataType(String colName, ScanContext ctx) {
-    if (ctx._table.getSchema() == null) {
+    Schema schema = ctx._table.getSchema();
+    if (schema == null) {
       return null;
     }
-    FieldSpec spec = ctx._table.getSchema().getFieldSpecFor(colName);
+    FieldSpec spec = schema.getFieldSpecFor(colName);
     return spec != null ? spec.getDataType() : null;
   }
 
@@ -387,7 +381,6 @@ public class PinotRelMdSelectivity implements MetadataHandler<BuiltInMetadata.Se
       case LONG:
       case FLOAT:
       case DOUBLE:
-      case TIMESTAMP:
         return true;
       default:
         return false;
