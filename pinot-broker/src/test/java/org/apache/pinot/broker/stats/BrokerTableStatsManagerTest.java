@@ -24,11 +24,14 @@ import java.nio.file.Path;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.OptionalLong;
 import java.util.Set;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 import javax.annotation.Nullable;
 import org.apache.helix.zookeeper.datamodel.ZNRecord;
 import org.apache.pinot.broker.routing.segmentmetadata.SegmentZkMetadataFetchListener;
@@ -394,6 +397,170 @@ public class BrokerTableStatsManagerTest {
   }
 
   // ---------------------------------------------------------------------------
+  // Column-stats coordinator tests
+  // ---------------------------------------------------------------------------
+
+  /// Column stats are fetched and persisted for segments that are new or changed on init().
+  @Test
+  public void testColumnStatsPersistedOnInit()
+      throws Exception {
+    CountDownLatch fetchLatch = new CountDownLatch(1);
+    CapturingColumnStatsSource source = new CapturingColumnStatsSource(fetchLatch);
+
+    // Use 50ms debounce: all scheduleColumnFetch calls complete before the task fires,
+    // ensuring both segments land in _pendingColumnSegments before the drain.
+    BrokerTableStatsManager mgr = new BrokerTableStatsManager(_store, source, 50);
+    mgr.init();
+
+    SegmentZkMetadataFetchListener listener = mgr.createListener(TABLE);
+    listener.init(null, null,
+        Arrays.asList("seg1", "seg2"),
+        Arrays.asList(
+            offlineRecord("seg1", 1L, 100L, 1000L, 0L, 10L),
+            offlineRecord("seg2", 2L, 200L, 2000L, 10L, 20L)));
+
+    assertTrue(fetchLatch.await(5, TimeUnit.SECONDS), "Column fetch must fire within 5 s");
+    // The source should have been called once for both segments in a single coalesced fetch
+    assertEquals(source.getCallCount(), 1);
+    Set<String> requestedSegs = source.getLastRequestedSegments();
+    assertTrue(requestedSegs.contains("seg1"));
+    assertTrue(requestedSegs.contains("seg2"));
+
+    mgr.close();
+  }
+
+  /// init() fetches column stats for all online segments (both new/changed AND CRC-matching),
+  /// so that first-time column-stats enable covers all existing segments without row-CRC changes.
+  @Test
+  public void testColumnStatsFetchedForAllSegmentsOnInit()
+      throws Exception {
+    // Pre-populate store with seg1 row stats (crc=1) — simulates restart with feature enabled
+    _store.upsertSegmentStats(TABLE, Collections.singletonList(
+        new SegmentStatsRow("seg1", 1L, 100L, 1000L, 0L, 10L, false)));
+
+    // Use a 50ms debounce so all scheduleColumnFetch() calls complete before the task fires
+    CountDownLatch fetchLatch = new CountDownLatch(1);
+    CapturingColumnStatsSource source = new CapturingColumnStatsSource(fetchLatch);
+    BrokerTableStatsManager mgr = new BrokerTableStatsManager(_store, source, 50);
+    mgr.init();
+
+    SegmentZkMetadataFetchListener listener = mgr.createListener(TABLE);
+    // seg1 has same CRC (row stats skipped), seg2 is new — column stats must be fetched for BOTH
+    listener.init(null, null,
+        Arrays.asList("seg1", "seg2"),
+        Arrays.asList(
+            offlineRecord("seg1", 1L, 100L, 1000L, 0L, 10L),  // unchanged row stats
+            offlineRecord("seg2", 2L, 200L, 2000L, 10L, 20L)));  // new
+
+    assertTrue(fetchLatch.await(5, TimeUnit.SECONDS));
+    // Both segments must be in the column-stats fetch request
+    Set<String> requestedSegs = source.getLastRequestedSegments();
+    assertTrue(requestedSegs.contains("seg1"),
+        "CRC-matching seg1 must still be fetched for column stats (feature cold-start)");
+    assertTrue(requestedSegs.contains("seg2"), "New seg2 must be fetched");
+
+    mgr.close();
+  }
+
+  /// onAssignmentChange triggers a column fetch for newly-online segments.
+  @Test
+  public void testColumnStatsFetchedOnAssignmentChange()
+      throws Exception {
+    CountDownLatch fetchLatch = new CountDownLatch(1);
+    CapturingColumnStatsSource source = new CapturingColumnStatsSource(fetchLatch);
+    BrokerTableStatsManager mgr = new BrokerTableStatsManager(_store, source, 0);
+    mgr.init();
+
+    SegmentZkMetadataFetchListener listener = mgr.createListener(TABLE);
+    // Bootstrap with seg1
+    listener.init(null, null,
+        Collections.singletonList("seg1"),
+        Collections.singletonList(offlineRecord("seg1", 1L, 100L, 1000L, 0L, 10L)));
+
+    // Wait for initial fetch
+    assertTrue(fetchLatch.await(5, TimeUnit.SECONDS));
+
+    // Now bring seg2 online via onAssignmentChange — a second latch
+    CountDownLatch fetch2Latch = new CountDownLatch(1);
+    source.resetLatch(fetch2Latch);
+
+    listener.onAssignmentChange(null, null, Set.of("seg1", "seg2"),
+        Collections.singletonList("seg2"),
+        Collections.singletonList(offlineRecord("seg2", 2L, 200L, 2000L, 10L, 20L)));
+
+    assertTrue(fetch2Latch.await(5, TimeUnit.SECONDS));
+    Set<String> requested = source.getLastRequestedSegments();
+    assertTrue(requested.contains("seg2"));
+
+    mgr.close();
+  }
+
+  /// Multiple segments added before the debounce window fires are coalesced into one fetch call.
+  @Test
+  public void testDebounceCoalescing()
+      throws Exception {
+    // Use a 100 ms debounce window so we can pile up segments before the task fires
+    CountDownLatch fetchLatch = new CountDownLatch(1);
+    CapturingColumnStatsSource source = new CapturingColumnStatsSource(fetchLatch);
+    BrokerTableStatsManager mgr = new BrokerTableStatsManager(_store, source, 100);
+    mgr.init();
+
+    SegmentZkMetadataFetchListener listener = mgr.createListener(TABLE);
+
+    // Add three segments in quick succession while the debounce window is open
+    listener.onAssignmentChange(null, null, Set.of("s1", "s2", "s3"),
+        Arrays.asList("s1", "s2", "s3"),
+        Arrays.asList(
+            offlineRecord("s1", 1L, 100L, 1000L, 0L, 10L),
+            offlineRecord("s2", 2L, 100L, 1000L, 0L, 10L),
+            offlineRecord("s3", 3L, 100L, 1000L, 0L, 10L)));
+
+    // Only 1 call should fire (not 3)
+    assertTrue(fetchLatch.await(5, TimeUnit.SECONDS));
+    assertEquals(source.getCallCount(), 1, "All three segments must be coalesced into one fetch");
+    Set<String> requested = source.getLastRequestedSegments();
+    assertEquals(requested.size(), 3);
+    assertTrue(requested.contains("s1"));
+    assertTrue(requested.contains("s2"));
+    assertTrue(requested.contains("s3"));
+
+    mgr.close();
+  }
+
+  /// A throwing ColumnStatsSource must not propagate exceptions to the listener or break stats.
+  @Test
+  public void testThrowingColumnSourceDoesNotBreakListener()
+      throws Exception {
+    // Track that the background task actually fired and threw
+    CountDownLatch throwLatch = new CountDownLatch(1);
+    AtomicInteger throwCount = new AtomicInteger(0);
+    ColumnStatsSource throwingSource = (table, segs) -> {
+      throwCount.incrementAndGet();
+      throwLatch.countDown();
+      throw new RuntimeException("simulated fetch error");
+    };
+    // Refresh interval 0 → fires immediately
+    BrokerTableStatsManager mgr = new BrokerTableStatsManager(_store, throwingSource, 0);
+    mgr.init();
+
+    SegmentZkMetadataFetchListener listener = mgr.createListener(TABLE);
+    // None of these should throw
+    listener.init(null, null,
+        Collections.singletonList("seg1"),
+        Collections.singletonList(offlineRecord("seg1", 1L, 100L, 1000L, 0L, 10L)));
+
+    // The throwing source must be invoked (proves the background task fired)
+    assertTrue(throwLatch.await(5, TimeUnit.SECONDS), "Background column fetch must fire within 5 s");
+    assertEquals(throwCount.get(), 1, "Throwing source must have been called exactly once");
+
+    // Row stats (non-column) must still be persisted correctly despite the column fetch error
+    Map<String, Long> crcs = _store.getSegmentCrcs(TABLE);
+    assertTrue(crcs.containsKey("seg1"), "Row stats must be persisted despite column fetch error");
+
+    mgr.close();
+  }
+
+  // ---------------------------------------------------------------------------
   // Stub: store that always throws
   // ---------------------------------------------------------------------------
 
@@ -471,6 +638,51 @@ public class BrokerTableStatsManagerTest {
 
     @Override
     public void close() {
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Stub: ColumnStatsSource that records calls and notifies a latch
+  // ---------------------------------------------------------------------------
+
+  /// [ColumnStatsSource] stub that records every call for assertion in coordinator tests.
+  /// Returns canned [SegmentColumnStatsRow] rows for each requested segment.
+  private static final class CapturingColumnStatsSource implements ColumnStatsSource {
+    private final AtomicInteger _callCount = new AtomicInteger(0);
+    private volatile Set<String> _lastRequestedSegments = Set.of();
+    private volatile CountDownLatch _latch;
+
+    CapturingColumnStatsSource(CountDownLatch latch) {
+      _latch = latch;
+    }
+
+    void resetLatch(CountDownLatch latch) {
+      _latch = latch;
+    }
+
+    int getCallCount() {
+      return _callCount.get();
+    }
+
+    Set<String> getLastRequestedSegments() {
+      return _lastRequestedSegments;
+    }
+
+    @Override
+    public Map<String, List<SegmentColumnStatsRow>> fetchColumnStats(String tableNameWithType,
+        Set<String> segmentNames) {
+      _callCount.incrementAndGet();
+      _lastRequestedSegments = Set.copyOf(segmentNames);
+      Map<String, List<SegmentColumnStatsRow>> result = new HashMap<>();
+      for (String seg : segmentNames) {
+        result.put(seg, Collections.singletonList(
+            new SegmentColumnStatsRow(seg, "age", 100L, "0", "99", true, 4.0, -1.0)));
+      }
+      CountDownLatch latch = _latch;
+      if (latch != null) {
+        latch.countDown();
+      }
+      return result;
     }
   }
 }
