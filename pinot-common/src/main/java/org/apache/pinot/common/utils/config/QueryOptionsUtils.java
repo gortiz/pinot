@@ -566,6 +566,11 @@ public class QueryOptionsUtils {
     return option != null ? checkedParseIntPositive(QueryOptionKey.JOIN_REORDER_MAX_JOINS, option) : defaultValue;
   }
 
+  public static boolean isUseSegmentAwareSelectivity(Map<String, String> queryOptions, boolean defaultValue) {
+    String option = queryOptions.get(QueryOptionKey.USE_SEGMENT_AWARE_SELECTIVITY);
+    return option != null ? Boolean.parseBoolean(option) : defaultValue;
+  }
+
   public static boolean isMultiClusterRoutingEnabled(Map<String, String> queryOptions, boolean defaultValue) {
     String option = queryOptions.get(QueryOptionKey.ENABLE_MULTI_CLUSTER_ROUTING);
     return option != null ? Boolean.parseBoolean(option) : defaultValue;

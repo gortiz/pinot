@@ -25,6 +25,9 @@ import java.util.Arrays;
 import java.util.Comparator;
 import java.util.List;
 import java.util.OptionalLong;
+import org.apache.pinot.query.planner.spi.stats.ColumnPredicate;
+import org.apache.pinot.query.planner.spi.stats.ColumnStatistics;
+import org.apache.pinot.query.planner.spi.stats.SegmentColumnStat;
 import org.apache.pinot.query.planner.spi.stats.StatConfidence;
 import org.apache.pinot.query.planner.spi.stats.TableStatistics;
 import org.apache.pinot.spi.config.table.DedupConfig;
@@ -49,6 +52,7 @@ public class LogicalTableStatsResolverTest {
   private static final String RAW_TABLE = "myTable";
   private static final String OFFLINE_TABLE = "myTable_OFFLINE";
   private static final String REALTIME_TABLE = "myTable_REALTIME";
+  private static final double DELTA = 1e-6;
 
   private Path _tempDir;
   private SqliteStatsStore _store;
@@ -411,6 +415,196 @@ public class LogicalTableStatsResolverTest {
     assertEquals(
         LogicalTableStatsResolver.weakest(StatConfidence.LOW, StatConfidence.ESTIMATED),
         StatConfidence.LOW);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Column-stats: suffixed physical lookup
+  // ---------------------------------------------------------------------------
+
+  @Test
+  public void testGetColumnStatsSuffixedOffline()
+      throws Exception {
+    insertSegments(OFFLINE_TABLE, Arrays.asList(
+        row("seg1", 1L, 100L, 1024L, 0L, 100L, false)
+    ));
+    _store.upsertSegmentColumnStats(OFFLINE_TABLE, Arrays.asList(
+        new SegmentColumnStatsRow("seg1", "age", 50L, "5", "95", true, 4.0, 0.0)
+    ));
+
+    ColumnStatistics stats = _resolver.getColumnStats(OFFLINE_TABLE, "age");
+    assertNotNull(stats, "Column stats must be present for physical table");
+    assertEquals(stats.getNdv(), 50L);
+    // SqliteStatsStore always returns ESTIMATED for aggregated NDV
+    assertEquals(stats.getNdvConfidence(), StatConfidence.ESTIMATED);
+    assertTrue(stats.isMinTrusted());
+  }
+
+  @Test
+  public void testGetColumnStatsReturnsNullWhenAbsent() {
+    assertNull(_resolver.getColumnStats(OFFLINE_TABLE, "age"),
+        "Must return null when no column stats stored");
+    assertNull(_resolver.getColumnStats(RAW_TABLE, "age"),
+        "Must return null for raw name with no data");
+  }
+
+  // ---------------------------------------------------------------------------
+  // Column-stats: raw name — only one side present
+  // ---------------------------------------------------------------------------
+
+  @Test
+  public void testGetColumnStatsRawOfflineOnly()
+      throws Exception {
+    insertSegments(OFFLINE_TABLE, Arrays.asList(
+        row("seg1", 1L, 100L, 1024L, 0L, 100L, false)
+    ));
+    _store.upsertSegmentColumnStats(OFFLINE_TABLE, Arrays.asList(
+        new SegmentColumnStatsRow("seg1", "price", 20L, "1", "100", true, 8.0, 0.1)
+    ));
+
+    ColumnStatistics stats = _resolver.getColumnStats(RAW_TABLE, "price");
+    assertNotNull(stats, "Must return offline stats when only offline side has data");
+    assertEquals(stats.getNdv(), 20L);
+  }
+
+  @Test
+  public void testGetColumnStatsRawRealtimeOnly()
+      throws Exception {
+    insertSegments(REALTIME_TABLE, Arrays.asList(
+        row("rtSeg1", 10L, 200L, 1024L, 50L, 150L, false)
+    ));
+    _store.upsertSegmentColumnStats(REALTIME_TABLE, Arrays.asList(
+        new SegmentColumnStatsRow("rtSeg1", "score", 30L, "10", "90", true, 4.0, 0.0)
+    ));
+
+    ColumnStatistics stats = _resolver.getColumnStats(RAW_TABLE, "score");
+    assertNotNull(stats, "Must return realtime stats when only realtime side has data");
+    assertEquals(stats.getNdv(), 30L);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Column-stats: raw name — merge two physical tables
+  // ---------------------------------------------------------------------------
+
+  @Test
+  public void testGetColumnStatsRawMergeWidensRangeAndMaxNdv()
+      throws Exception {
+    insertSegments(OFFLINE_TABLE, Arrays.asList(
+        row("seg1", 1L, 100L, 1024L, 0L, 100L, false)
+    ));
+    insertSegments(REALTIME_TABLE, Arrays.asList(
+        row("rtSeg1", 10L, 200L, 1024L, 50L, 150L, false)
+    ));
+    // Offline: NDV=20, min=5, max=80
+    _store.upsertSegmentColumnStats(OFFLINE_TABLE, Arrays.asList(
+        new SegmentColumnStatsRow("seg1", "age", 20L, "5", "80", true, 4.0, 0.0)
+    ));
+    // Realtime: NDV=30, min=1, max=95
+    _store.upsertSegmentColumnStats(REALTIME_TABLE, Arrays.asList(
+        new SegmentColumnStatsRow("rtSeg1", "age", 30L, "1", "95", true, 4.0, 0.0)
+    ));
+
+    ColumnStatistics stats = _resolver.getColumnStats(RAW_TABLE, "age");
+    assertNotNull(stats, "Merged stats must be non-null when both sides have data");
+    // NDV = max(20, 30) = 30
+    assertEquals(stats.getNdv(), 30L, "NDV must be max of the two sides");
+    // min = min-of-mins (numeric: 1 < 5); SqliteStatsStore returns Double so check numerically
+    assertNotNull(stats.getMinValue());
+    double minActual = ((Number) stats.getMinValue()).doubleValue();
+    assertEquals(minActual, 1.0, DELTA, "Min must be the numerically smaller of the two mins");
+    // max = max-of-maxs = 95.0
+    assertNotNull(stats.getMaxValue());
+    double maxActual = ((Number) stats.getMaxValue()).doubleValue();
+    assertEquals(maxActual, 95.0, DELTA, "Max must be the numerically larger of the two maxs");
+    // minTrusted = AND = true && true = true
+    assertTrue(stats.isMinTrusted(), "minTrusted must be AND of both sides");
+    // confidence must be at most ESTIMATED (merging always downgrades)
+    assertNotEquals(stats.getNdvConfidence(), StatConfidence.EXACT,
+        "Merged confidence must not be EXACT");
+  }
+
+  @Test
+  public void testGetColumnStatsRawMergeMinTrustedFalseWhenEitherFalse()
+      throws Exception {
+    insertSegments(OFFLINE_TABLE, Arrays.asList(
+        row("seg1", 1L, 100L, 1024L, 0L, 100L, false)
+    ));
+    insertSegments(REALTIME_TABLE, Arrays.asList(
+        row("rtSeg1", 10L, 200L, 1024L, 50L, 150L, false)
+    ));
+    // Offline: minTrusted=true; Realtime: minTrusted=false (null-sentinel pollution)
+    _store.upsertSegmentColumnStats(OFFLINE_TABLE, Arrays.asList(
+        new SegmentColumnStatsRow("seg1", "val", 10L, "0", "100", true, 4.0, 0.0)
+    ));
+    _store.upsertSegmentColumnStats(REALTIME_TABLE, Arrays.asList(
+        new SegmentColumnStatsRow("rtSeg1", "val", 15L, "-2147483648", "100", false, 4.0, 0.0)
+    ));
+
+    ColumnStatistics stats = _resolver.getColumnStats(RAW_TABLE, "val");
+    assertNotNull(stats);
+    assertFalse(stats.isMinTrusted(),
+        "minTrusted must be false when either side has minTrusted=false");
+  }
+
+  @Test
+  public void testGetColumnStatsRawMergeConfidenceIsWeakest()
+      throws Exception {
+    insertSegments(OFFLINE_TABLE, Arrays.asList(
+        row("seg1", 1L, 100L, 1024L, 0L, 100L, false)
+    ));
+    insertSegments(REALTIME_TABLE, Arrays.asList(
+        row("rtSeg1", 10L, 200L, 1024L, 50L, 150L, false)
+    ));
+    // Even if both physical stores report EXACT, the merged result must be at most ESTIMATED
+    _store.upsertSegmentColumnStats(OFFLINE_TABLE, Arrays.asList(
+        new SegmentColumnStatsRow("seg1", "v", 10L, "0", "50", true, 4.0, 0.0)
+    ));
+    _store.upsertSegmentColumnStats(REALTIME_TABLE, Arrays.asList(
+        new SegmentColumnStatsRow("rtSeg1", "v", 10L, "0", "50", true, 4.0, 0.0)
+    ));
+
+    ColumnStatistics stats = _resolver.getColumnStats(RAW_TABLE, "v");
+    assertNotNull(stats);
+    assertEquals(stats.getNdvConfidence(), StatConfidence.ESTIMATED,
+        "Merged confidence from two EXACT sides must be ESTIMATED");
+  }
+
+  // ---------------------------------------------------------------------------
+  // Segment-aware surviving/all per-segment reads (raw-name union)
+  // ---------------------------------------------------------------------------
+
+  @Test
+  public void testSurvivingSegmentsRawUnionsOfflineAndRealtime()
+      throws Exception {
+    insertSegments(OFFLINE_TABLE, Arrays.asList(row("seg1", 1L, 100L, 1024L, 0L, 100L, false)));
+    insertSegments(REALTIME_TABLE, Arrays.asList(row("rtSeg1", 10L, 200L, 1024L, 0L, 100L, false)));
+    _store.upsertSegmentColumnStats(OFFLINE_TABLE, Arrays.asList(
+        new SegmentColumnStatsRow("seg1", "val", 10L, "0", "10", true, 4.0, 0.0)));
+    _store.upsertSegmentColumnStats(REALTIME_TABLE, Arrays.asList(
+        new SegmentColumnStatsRow("rtSeg1", "val", 5L, "5", "15", true, 4.0, 0.0)));
+
+    // value 6 overlaps both physical tables' segments → raw lookup unions both.
+    List<SegmentColumnStat> survivors = _resolver.getSurvivingSegmentColumnStats(RAW_TABLE, "val",
+        ColumnPredicate.equalTo(6.0), 100);
+    assertEquals(survivors.size(), 2, "Raw lookup must union OFFLINE and REALTIME survivors");
+
+    // Suffixed lookup sees only its own physical table.
+    assertEquals(_resolver.getSurvivingSegmentColumnStats(OFFLINE_TABLE, "val",
+        ColumnPredicate.equalTo(6.0), 100).size(), 1);
+  }
+
+  @Test
+  public void testSurvivingSegmentsRawUnionBoundedByLimit()
+      throws Exception {
+    insertSegments(OFFLINE_TABLE, Arrays.asList(row("seg1", 1L, 100L, 1024L, 0L, 100L, false)));
+    insertSegments(REALTIME_TABLE, Arrays.asList(row("rtSeg1", 10L, 200L, 1024L, 0L, 100L, false)));
+    _store.upsertSegmentColumnStats(OFFLINE_TABLE, Arrays.asList(
+        new SegmentColumnStatsRow("seg1", "val", 10L, "0", "10", true, 4.0, 0.0)));
+    _store.upsertSegmentColumnStats(REALTIME_TABLE, Arrays.asList(
+        new SegmentColumnStatsRow("rtSeg1", "val", 5L, "5", "15", true, 4.0, 0.0)));
+
+    // limit 1 → offline fills the budget, realtime is not consulted.
+    assertEquals(_resolver.getSurvivingSegmentColumnStats(RAW_TABLE, "val",
+        ColumnPredicate.equalTo(6.0), 1).size(), 1);
   }
 
   // ---------------------------------------------------------------------------

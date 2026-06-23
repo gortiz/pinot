@@ -20,7 +20,9 @@ package org.apache.pinot.calcite.rel.metadata;
 
 import com.google.common.collect.Range;
 import java.math.BigDecimal;
+import java.util.ArrayList;
 import java.util.List;
+import java.util.OptionalDouble;
 import java.util.OptionalLong;
 import java.util.Set;
 import javax.annotation.Nullable;
@@ -45,6 +47,8 @@ import org.apache.pinot.query.planner.spi.stats.ColumnStatistics;
 import org.apache.pinot.query.planner.spi.stats.PinotStatisticsProvider;
 import org.apache.pinot.query.planner.spi.stats.StatConfidence;
 import org.apache.pinot.query.planner.spi.stats.TableStatistics;
+import org.apache.pinot.spi.data.FieldSpec;
+import org.apache.pinot.spi.data.Schema;
 
 
 /// Metadata handler that improves selectivity estimation for Pinot tables using
@@ -153,7 +157,7 @@ public class PinotRelMdSelectivity implements MetadataHandler<BuiltInMetadata.Se
     long timeLo = Long.MIN_VALUE;
     long timeHi = Long.MAX_VALUE;
     boolean hasTimePredicate = false;
-    double nonTimeSelectivity = 1.0;
+    List<RexNode> nonTimeConjuncts = new ArrayList<>(conjuncts.size());
 
     for (RexNode conjunct : conjuncts) {
       if (timeCol != null && rowCount > 0) {
@@ -183,7 +187,7 @@ public class PinotRelMdSelectivity implements MetadataHandler<BuiltInMetadata.Se
           }
         }
       }
-      nonTimeSelectivity *= computeConjunctSelectivity(conjunct, ctx, tableName, provider, rowCount);
+      nonTimeConjuncts.add(conjunct);
     }
 
     double timeSelectivity = 1.0;
@@ -206,7 +210,38 @@ public class PinotRelMdSelectivity implements MetadataHandler<BuiltInMetadata.Se
       }
     }
 
+    double nonTimeSelectivity = computeNonTimeSelectivity(predicate, nonTimeConjuncts, ctx,
+        tableName, provider, rowCount);
+
     return Math.min(1.0, Math.max(0.0, timeSelectivity * nonTimeSelectivity));
+  }
+
+  /// Computes the combined selectivity of the non-time conjuncts. When a per-query
+  /// [SegmentAwareSelectivityEstimator] is installed (feature on) and produces an estimate, that
+  /// (tighter, query-aware) value is used; otherwise the conjuncts are multiplied using the
+  /// aggregated per-conjunct logic — the unchanged behavior when the feature is off.
+  private double computeNonTimeSelectivity(@Nullable RexNode effectivePred,
+      List<RexNode> nonTimeConjuncts, ScanContext ctx, String tableName,
+      PinotStatisticsProvider provider, double rowCount) {
+    if (nonTimeConjuncts.isEmpty()) {
+      return 1.0;
+    }
+    SegmentAwareSelectivityEstimator estimator = SegmentAwareSelectivityEstimator.current();
+    if (estimator != null && effectivePred != null && rowCount > 0) {
+      OptionalDouble segAware = estimator.estimate(effectivePred, nonTimeConjuncts, tableName,
+          provider, rowCount,
+          ref -> resolveColName(ref, ctx),
+          col -> resolveColumnDataType(col, ctx),
+          node -> computeConjunctSelectivity(node, ctx, tableName, provider, rowCount));
+      if (segAware.isPresent()) {
+        return segAware.getAsDouble();
+      }
+    }
+    double selectivity = 1.0;
+    for (RexNode conjunct : nonTimeConjuncts) {
+      selectivity *= computeConjunctSelectivity(conjunct, ctx, tableName, provider, rowCount);
+    }
+    return selectivity;
   }
 
   // --------------------------------------------------------------------------
@@ -215,26 +250,215 @@ public class PinotRelMdSelectivity implements MetadataHandler<BuiltInMetadata.Se
 
   private double computeConjunctSelectivity(RexNode conjunct, ScanContext ctx, String tableName,
       PinotStatisticsProvider provider, double rowCount) {
-    if (conjunct.getKind() != SqlKind.EQUALS) {
-      return RelMdUtil.guessSelectivity(conjunct);
-    }
-    // Equality on a non-time column: try NDV.
-    String colName = extractColumnRef(conjunct, ctx);
-    if (colName == null) {
-      return RelMdUtil.guessSelectivity(conjunct);
-    }
-    ColumnStatistics colStats = provider.getColumnStatistics(tableName, colName);
-    if (colStats == null) {
-      return RelMdUtil.guessSelectivity(conjunct);
-    }
-    StatConfidence conf = colStats.getNdvConfidence();
-    if (conf == StatConfidence.EXACT || conf == StatConfidence.ESTIMATED) {
-      long ndv = colStats.getNdv();
-      if (ndv >= 1) {
-        return 1.0 / ndv;
+    SqlKind kind = conjunct.getKind();
+    if (kind == SqlKind.EQUALS) {
+      // Equality on a non-time column: try NDV.
+      String colName = extractColumnRef(conjunct, ctx);
+      if (colName == null) {
+        return RelMdUtil.guessSelectivity(conjunct);
       }
+      ColumnStatistics colStats = provider.getColumnStatistics(tableName, colName);
+      if (colStats == null) {
+        return RelMdUtil.guessSelectivity(conjunct);
+      }
+      StatConfidence conf = colStats.getNdvConfidence();
+      if (conf == StatConfidence.EXACT || conf == StatConfidence.ESTIMATED) {
+        long ndv = colStats.getNdv();
+        if (ndv >= 1) {
+          return 1.0 / ndv;
+        }
+      }
+      return RelMdUtil.guessSelectivity(conjunct);
     }
+
+    if (kind == SqlKind.GREATER_THAN || kind == SqlKind.GREATER_THAN_OR_EQUAL
+        || kind == SqlKind.LESS_THAN || kind == SqlKind.LESS_THAN_OR_EQUAL) {
+      // Range predicate on a non-time column: try min/max stats for numeric types.
+      RangeRef rangeRef = extractRangeRef(conjunct, ctx);
+      if (rangeRef == null) {
+        return RelMdUtil.guessSelectivity(conjunct);
+      }
+      // Only apply min/max selectivity for numeric column types.
+      FieldSpec.DataType dataType = resolveColumnDataType(rangeRef._colName, ctx);
+      if (!isNumericForRangeSelectivity(dataType)) {
+        return RelMdUtil.guessSelectivity(conjunct);
+      }
+      ColumnStatistics colStats = provider.getColumnStatistics(tableName, rangeRef._colName);
+      if (colStats == null) {
+        return RelMdUtil.guessSelectivity(conjunct);
+      }
+      // Gate on confidence: only use min/max when stats quality is EXACT or ESTIMATED.
+      // ndvConfidence is used as a proxy for overall stats quality since ColumnStatistics
+      // does not model separate min/max confidence.
+      StatConfidence conf = colStats.getNdvConfidence();
+      if (conf != StatConfidence.EXACT && conf != StatConfidence.ESTIMATED) {
+        return RelMdUtil.guessSelectivity(conjunct);
+      }
+      Double minD = toDoubleValue(colStats.getMinValue());
+      Double maxD = toDoubleValue(colStats.getMaxValue());
+      if (minD == null || maxD == null) {
+        return RelMdUtil.guessSelectivity(conjunct);
+      }
+      return rangeSelectivity(rangeRef._effectiveKind, rangeRef._literalValue,
+          minD, maxD, colStats.isMinTrusted());
+    }
+
     return RelMdUtil.guessSelectivity(conjunct);
+  }
+
+  /// Computes range selectivity under a uniform-distribution assumption.
+  ///
+  /// When `minTrusted` is false, the stored minimum may be polluted by a numeric null-sentinel
+  /// (e.g. Integer.MIN_VALUE). In that case the effective lower bound is estimated as:
+  /// - `-|max|` when `max > 0` (symmetric range assumption)
+  /// - falls back to `FALLBACK_RANGE_SELECTIVITY` when `max <= 0` and `minTrusted=false`
+  ///   (all-negative column with untrusted min — no reliable range info)
+  ///
+  /// The result is clamped to [0.0, 1.0].
+  ///
+  /// @param kind         normalised comparison kind (col is always on the left)
+  /// @param v            literal value from the predicate
+  /// @param min          stored column minimum
+  /// @param max          stored column maximum
+  /// @param minTrusted   whether the stored minimum is reliable
+  /// @return selectivity in [0.0, 1.0]
+  static double rangeSelectivity(SqlKind kind, double v,
+      double min, double max, boolean minTrusted) {
+    double lo;
+    if (minTrusted) {
+      lo = min;
+    } else if (max > 0) {
+      lo = -Math.abs(max);
+    } else {
+      // All-negative column with untrusted min: no reliable lower bound estimation possible.
+      return FALLBACK_RANGE_SELECTIVITY;
+    }
+    double hi = max;
+    if (hi <= lo) {
+      // Degenerate range — fall back to default guess.
+      return FALLBACK_RANGE_SELECTIVITY;
+    }
+    double span = hi - lo;
+    double sel;
+    switch (kind) {
+      case GREATER_THAN:
+      case GREATER_THAN_OR_EQUAL:
+        // fraction of values > v (±1 negligible at estimation scale)
+        sel = (hi - v) / span;
+        break;
+      case LESS_THAN:
+      case LESS_THAN_OR_EQUAL:
+        // fraction of values < v
+        sel = (v - lo) / span;
+        break;
+      default:
+        return FALLBACK_RANGE_SELECTIVITY;
+    }
+    return Math.min(1.0, Math.max(0.0, sel));
+  }
+
+  /// Extracts the referenced column name and normalised comparison info from a range conjunct.
+  /// Returns `null` if the conjunct is not a recognised column-vs-literal range comparison.
+  @Nullable
+  private RangeRef extractRangeRef(RexNode conjunct, ScanContext ctx) {
+    if (!(conjunct instanceof RexCall)) {
+      return null;
+    }
+    RexCall call = (RexCall) conjunct;
+    if (call.operands.size() != 2) {
+      return null;
+    }
+    RexNode left = call.operands.get(0);
+    RexNode right = call.operands.get(1);
+
+    SqlKind effectiveKind = call.getKind();
+    RexNode colOperand = left;
+    RexNode litOperand = right;
+    if (left instanceof RexLiteral && !(right instanceof RexLiteral)) {
+      colOperand = right;
+      litOperand = left;
+      effectiveKind = flipComparison(call.getKind());
+    }
+    if (!(colOperand instanceof RexInputRef) || !(litOperand instanceof RexLiteral)) {
+      return null;
+    }
+    String colName = resolveColName((RexInputRef) colOperand, ctx);
+    if (colName == null) {
+      return null;
+    }
+    Double litVal = toDoubleValue((RexLiteral) litOperand);
+    if (litVal == null) {
+      return null;
+    }
+    return new RangeRef(colName, effectiveKind, litVal);
+  }
+
+  /// Resolves the column data type from the scan schema.
+  @Nullable
+  private FieldSpec.DataType resolveColumnDataType(String colName, ScanContext ctx) {
+    Schema schema = ctx._table.getSchema();
+    if (schema == null) {
+      return null;
+    }
+    FieldSpec spec = schema.getFieldSpecFor(colName);
+    return spec != null ? spec.getDataType() : null;
+  }
+
+  /// Returns true when the data type warrants min/max range selectivity estimation.
+  private static boolean isNumericForRangeSelectivity(@Nullable FieldSpec.DataType dataType) {
+    if (dataType == null) {
+      return false;
+    }
+    switch (dataType) {
+      case INT:
+      case LONG:
+      case FLOAT:
+      case DOUBLE:
+        return true;
+      default:
+        return false;
+    }
+  }
+
+  /// Converts a [Comparable] (from column stats min/max) to a double. Returns `null` if the
+  /// value cannot be converted.
+  @Nullable
+  private static Double toDoubleValue(@Nullable Comparable<?> value) {
+    if (value == null) {
+      return null;
+    }
+    if (value instanceof Number) {
+      return ((Number) value).doubleValue();
+    }
+    try {
+      return Double.parseDouble(value.toString());
+    } catch (NumberFormatException e) {
+      return null;
+    }
+  }
+
+  /// Converts a [RexLiteral] to a double value for range comparisons.
+  @Nullable
+  private static Double toDoubleValue(RexLiteral literal) {
+    switch (literal.getType().getSqlTypeName()) {
+      case TINYINT:
+      case SMALLINT:
+      case INTEGER:
+      case BIGINT:
+      case FLOAT:
+      case REAL:
+      case DOUBLE:
+      case DECIMAL: {
+        Number n = (Number) literal.getValue();
+        return n != null ? n.doubleValue() : null;
+      }
+      case TIMESTAMP: {
+        Number n = (Number) literal.getValue2();
+        return n != null ? n.doubleValue() : null;
+      }
+      default:
+        return null;
+    }
   }
 
   // --------------------------------------------------------------------------
@@ -598,6 +822,20 @@ public class PinotRelMdSelectivity implements MetadataHandler<BuiltInMetadata.Se
       _millis = millis;
       _isLowerBound = isLowerBound;
       _isEquality = isEquality;
+    }
+  }
+
+  /// Extracted column reference and normalised comparison details for a range predicate.
+  /// The column is always on the left side of the comparison (literal on the right).
+  private static final class RangeRef {
+    final String _colName;
+    final SqlKind _effectiveKind;
+    final double _literalValue;
+
+    RangeRef(String colName, SqlKind effectiveKind, double literalValue) {
+      _colName = colName;
+      _effectiveKind = effectiveKind;
+      _literalValue = literalValue;
     }
   }
 }

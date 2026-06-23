@@ -58,6 +58,7 @@ import org.apache.calcite.tools.RelBuilder;
 import org.apache.commons.collections4.MapUtils;
 import org.apache.commons.lang3.tuple.Pair;
 import org.apache.pinot.calcite.rel.metadata.PinotDefaultRelMetadataProvider;
+import org.apache.pinot.calcite.rel.metadata.SegmentAwareSelectivityEstimator;
 import org.apache.pinot.calcite.rel.rules.ImmutablePinotSortExchangeCopyRule;
 import org.apache.pinot.calcite.rel.rules.PinotEnrichedJoinRule;
 import org.apache.pinot.calcite.rel.rules.PinotImplicitTableHintRule;
@@ -524,18 +525,34 @@ public class QueryEnvironment {
       RelNode optimized = optPlanner.findBestExp();
       listener.printRuleTimings();
       listener.populateRuleTimings();
-      // Scoped, gated, cost-based join-reordering phase. Runs after the logical Hep program and
-      // before the trait phase. Off by default; when disabled or when its eligibility gates fail
-      // it returns the plan unchanged. It never throws — see JoinReorderOptimizer.maybeReorder.
-      if (QueryOptionsUtils.isUseJoinReorder(plannerContext.getOptions(),
-          _envConfig.defaultUseJoinReorder())) {
-        int maxJoins = QueryOptionsUtils.getJoinReorderMaxJoins(plannerContext.getOptions(),
-            _envConfig.defaultJoinReorderMaxJoins());
-        optimized = JoinReorderOptimizer.maybeReorder(optimized, maxJoins);
+      // Segment-aware (query-aware) selectivity pre-pass. Installed after the logical Hep program
+      // (so filters already sit on leaf scans) and torn down in the finally below. When on, the
+      // selectivity metadata handler refines filter estimates using per-segment min/max stats; it
+      // is estimation-only and falls back to the aggregated path when stats are missing. Off by
+      // default.
+      boolean segmentAwareSelectivity = QueryOptionsUtils.isUseSegmentAwareSelectivity(
+          plannerContext.getOptions(), _envConfig.defaultUseSegmentAwareSelectivity());
+      if (segmentAwareSelectivity) {
+        SegmentAwareSelectivityEstimator.install();
       }
-      RelOptPlanner traitPlanner = plannerContext.getRelTraitPlanner();
-      traitPlanner.setRoot(optimized);
-      return traitPlanner.findBestExp();
+      try {
+        // Scoped, gated, cost-based join-reordering phase. Runs after the logical Hep program and
+        // before the trait phase. Off by default; when disabled or when its eligibility gates fail
+        // it returns the plan unchanged. It never throws — see JoinReorderOptimizer.maybeReorder.
+        if (QueryOptionsUtils.isUseJoinReorder(plannerContext.getOptions(),
+            _envConfig.defaultUseJoinReorder())) {
+          int maxJoins = QueryOptionsUtils.getJoinReorderMaxJoins(plannerContext.getOptions(),
+              _envConfig.defaultJoinReorderMaxJoins());
+          optimized = JoinReorderOptimizer.maybeReorder(optimized, maxJoins);
+        }
+        RelOptPlanner traitPlanner = plannerContext.getRelTraitPlanner();
+        traitPlanner.setRoot(optimized);
+        return traitPlanner.findBestExp();
+      } finally {
+        if (segmentAwareSelectivity) {
+          SegmentAwareSelectivityEstimator.clear();
+        }
+      }
     } catch (Throwable e) {
       throw QueryErrorCode.QUERY_PLANNING.asException("Error optimizing query: " + e.getMessage(), e);
     }
@@ -850,6 +867,17 @@ public class QueryEnvironment {
     @Value.Default
     default int defaultJoinReorderMaxJoins() {
       return CommonConstants.Broker.DEFAULT_JOIN_REORDER_MAX_JOINS;
+    }
+
+    /// Whether to run the segment-aware (query-aware) selectivity pre-pass by default.
+    ///
+    /// This is treated as the default value for the broker and it is expected to be obtained from a Pinot
+    /// configuration.
+    /// This default value can be always overridden at query level by the query option
+    /// [CommonConstants.Broker.Request.QueryOptionKey#USE_SEGMENT_AWARE_SELECTIVITY].
+    @Value.Default
+    default boolean defaultUseSegmentAwareSelectivity() {
+      return CommonConstants.Broker.DEFAULT_USE_SEGMENT_AWARE_SELECTIVITY;
     }
 
     /**

@@ -18,10 +18,13 @@
  */
 package org.apache.pinot.broker.stats;
 
+import java.util.List;
 import java.util.OptionalLong;
 import javax.annotation.Nullable;
+import org.apache.pinot.query.planner.spi.stats.ColumnPredicate;
 import org.apache.pinot.query.planner.spi.stats.ColumnStatistics;
 import org.apache.pinot.query.planner.spi.stats.PinotStatisticsProvider;
+import org.apache.pinot.query.planner.spi.stats.SegmentColumnStat;
 import org.apache.pinot.query.planner.spi.stats.TableStatistics;
 
 
@@ -50,16 +53,26 @@ public class BrokerStatisticsProvider implements PinotStatisticsProvider {
     return _statsManager.getTableStats(tableName);
   }
 
-  /// Column-level statistics are not yet collected in T1 of the CBO initiative.
-  /// Returns `null` unconditionally; will be implemented in a future task.
   @Nullable
   @Override
   public ColumnStatistics getColumnStatistics(String tableName, String columnName) {
-    return null;
+    return _statsManager.getColumnStats(tableName, columnName);
   }
 
   @Override
   public OptionalLong estimateRowsInTimeRange(String tableName, long startMs, long endMs) {
     return _statsManager.estimateRowsInTimeRange(tableName, startMs, endMs);
+  }
+
+  @Override
+  public List<SegmentColumnStat> getSurvivingSegmentColumnStats(String tableName, String columnName,
+      ColumnPredicate predicate, int limit) {
+    return _statsManager.getSurvivingSegmentColumnStats(tableName, columnName, predicate, limit);
+  }
+
+  @Override
+  public List<SegmentColumnStat> getSegmentColumnStats(String tableName, String columnName,
+      int limit) {
+    return _statsManager.getSegmentColumnStats(tableName, columnName, limit);
   }
 }

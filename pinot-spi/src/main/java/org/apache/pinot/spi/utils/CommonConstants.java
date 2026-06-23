@@ -643,6 +643,17 @@ public class CommonConstants {
         "pinot.broker.multistage.join.reorder.max.joins";
     public static final int DEFAULT_JOIN_REORDER_MAX_JOINS = 10;
 
+    /// Whether to run the segment-aware (query-aware) selectivity pre-pass by default. When on, the
+    /// planner refines filter selectivity using per-segment min/max stats (pruning whole segments a
+    /// predicate cannot match) instead of the table-aggregated min/max only. Estimation only —
+    /// never affects correctness; falls back to the aggregated estimate when per-segment stats are
+    /// absent, low-confidence, or the survivor set is large.
+    /// This value can always be overridden by
+    /// [Request.QueryOptionKey#USE_SEGMENT_AWARE_SELECTIVITY] query option.
+    public static final String CONFIG_OF_USE_SEGMENT_AWARE_SELECTIVITY =
+        "pinot.broker.multistage.use.segment.aware.selectivity";
+    public static final boolean DEFAULT_USE_SEGMENT_AWARE_SELECTIVITY = false;
+
     /**
      * Whether to use lite mode by default.
      * This value can always be overridden by {@link Request.QueryOptionKey#USE_LITE_MODE} query option
@@ -852,6 +863,8 @@ public class CommonConstants {
         /// Maximum number of joins that the cost-based join-reordering phase will handle.
         /// Plans with more joins than this cap are left unchanged.
         public static final String JOIN_REORDER_MAX_JOINS = "joinReorderMaxJoins";
+        /// Whether to run the segment-aware (query-aware) selectivity pre-pass for this query.
+        public static final String USE_SEGMENT_AWARE_SELECTIVITY = "useSegmentAwareSelectivity";
         /**
          * When set to true, the broker uses the long-lived {@code SubmitWithStream} bidi RPC to dispatch the query,
          * receiving stage stats out-of-band as {@code OpChainComplete} messages instead of via mailbox EOS. The
