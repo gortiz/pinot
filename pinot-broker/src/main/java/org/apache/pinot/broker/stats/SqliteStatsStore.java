@@ -27,6 +27,7 @@ import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Statement;
+import java.sql.Types;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.HashMap;
@@ -34,7 +35,9 @@ import java.util.List;
 import java.util.Map;
 import java.util.OptionalLong;
 import javax.annotation.Nullable;
+import org.apache.pinot.query.planner.spi.stats.ColumnPredicate;
 import org.apache.pinot.query.planner.spi.stats.ColumnStatistics;
+import org.apache.pinot.query.planner.spi.stats.SegmentColumnStat;
 import org.apache.pinot.query.planner.spi.stats.StatConfidence;
 import org.apache.pinot.query.planner.spi.stats.TableStatistics;
 import org.flywaydb.core.Flyway;
@@ -75,11 +78,36 @@ public class SqliteStatsStore implements StatsStore {
 
   private static final String SQL_UPSERT_COL =
       "INSERT INTO segment_col_stats(table_name,segment_name,column_name,ndv,min_value,"
-          + "max_value,min_trusted,avg_bytes,null_fraction,updated_at_ms) VALUES(?,?,?,?,?,?,?,?,?,?) "
+          + "max_value,min_trusted,avg_bytes,null_fraction,min_num,max_num,segment_id,updated_at_ms) "
+          + "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?) "
           + "ON CONFLICT(table_name,segment_name,column_name) DO UPDATE SET "
           + "ndv=excluded.ndv,min_value=excluded.min_value,max_value=excluded.max_value,"
           + "min_trusted=excluded.min_trusted,avg_bytes=excluded.avg_bytes,"
-          + "null_fraction=excluded.null_fraction,updated_at_ms=excluded.updated_at_ms";
+          + "null_fraction=excluded.null_fraction,min_num=excluded.min_num,"
+          + "max_num=excluded.max_num,segment_id=excluded.segment_id,"
+          + "updated_at_ms=excluded.updated_at_ms";
+
+  /// Per-segment numeric prune: keep segments whose `[min_num, max_num]` range overlaps the
+  /// predicate window `[lo, hi]` (`min_num <= hi AND max_num >= lo`). Rows with NULL numeric
+  /// bounds (non-numeric / unparseable) are excluded — those columns use the string path instead.
+  /// Returns the precomputed `segment_id` (not the name) so the read path never allocates the name.
+  private static final String SQL_SURVIVING_COL =
+      "SELECT c.segment_id,s.total_docs,c.ndv,c.min_value,c.max_value,c.min_trusted "
+          + "FROM segment_col_stats c "
+          + "JOIN segment_stats s ON s.table_name=c.table_name AND s.segment_name=c.segment_name "
+          + "WHERE c.table_name=? AND c.column_name=? AND s.consuming=0 "
+          + "AND c.min_num IS NOT NULL AND c.max_num IS NOT NULL "
+          + "AND c.min_num <= ? AND c.max_num >= ? LIMIT ?";
+
+  /// All non-consuming per-segment rows for a column (the string Java-prune path). `segment_id IS
+  /// NOT NULL` excludes legacy rows written before the V2 migration (whose id was never computed),
+  /// which would otherwise read back as a colliding `0`.
+  private static final String SQL_ALL_SEG_COL =
+      "SELECT c.segment_id,s.total_docs,c.ndv,c.min_value,c.max_value,c.min_trusted "
+          + "FROM segment_col_stats c "
+          + "JOIN segment_stats s ON s.table_name=c.table_name AND s.segment_name=c.segment_name "
+          + "WHERE c.table_name=? AND c.column_name=? AND s.consuming=0 "
+          + "AND c.segment_id IS NOT NULL LIMIT ?";
 
   private static final String SQL_DELETE_SEGMENT =
       "DELETE FROM segment_stats WHERE table_name=? AND segment_name=?";
@@ -287,7 +315,10 @@ public class SqliteStatsStore implements StatsStore {
             ps.setInt(7, row.isMinTrusted() ? 1 : 0);
             ps.setDouble(8, row.getAvgBytesPerValue());
             ps.setDouble(9, row.getNullFraction());
-            ps.setLong(10, now);
+            setNullableDouble(ps, 10, parseDoubleOrNull(row.getMinValue()));
+            setNullableDouble(ps, 11, parseDoubleOrNull(row.getMaxValue()));
+            ps.setLong(12, SegmentColumnStat.hashSegmentName(row.getSegmentName()));
+            ps.setLong(13, now);
             ps.addBatch();
           }
           ps.executeBatch();
@@ -613,6 +644,77 @@ public class SqliteStatsStore implements StatsStore {
     }
   }
 
+  @Override
+  public List<SegmentColumnStat> getSurvivingSegmentColumnStats(String tableNameWithType,
+      String columnName, ColumnPredicate predicate, int limit)
+      throws StatsStoreException {
+    checkOpen();
+    Connection conn = borrowReadConn();
+    try (PreparedStatement ps = conn.prepareStatement(SQL_SURVIVING_COL)) {
+      ps.setString(1, tableNameWithType);
+      ps.setString(2, columnName);
+      // Overlap: keep segments where min_num <= hi AND max_num >= lo.
+      ps.setDouble(3, predicate.getHi());
+      ps.setDouble(4, predicate.getLo());
+      ps.setInt(5, limit);
+      try (ResultSet rs = ps.executeQuery()) {
+        return readSegmentColumnStats(rs);
+      }
+    } catch (SQLException e) {
+      throw new StatsStoreException("getSurvivingSegmentColumnStats failed for "
+          + tableNameWithType + "." + columnName, e);
+    } finally {
+      returnReadConn(conn);
+    }
+  }
+
+  @Override
+  public List<SegmentColumnStat> getSegmentColumnStats(String tableNameWithType, String columnName,
+      int limit)
+      throws StatsStoreException {
+    checkOpen();
+    Connection conn = borrowReadConn();
+    try (PreparedStatement ps = conn.prepareStatement(SQL_ALL_SEG_COL)) {
+      ps.setString(1, tableNameWithType);
+      ps.setString(2, columnName);
+      ps.setInt(3, limit);
+      try (ResultSet rs = ps.executeQuery()) {
+        return readSegmentColumnStats(rs);
+      }
+    } catch (SQLException e) {
+      throw new StatsStoreException("getSegmentColumnStats failed for "
+          + tableNameWithType + "." + columnName, e);
+    } finally {
+      returnReadConn(conn);
+    }
+  }
+
+  /// Reads `(segment_id, total_docs, ndv, min_value, max_value, min_trusted)` rows into
+  /// [SegmentColumnStat] objects with [StatConfidence#ESTIMATED] NDV confidence. The segment id is
+  /// read directly as a `long`; the segment name is never materialized on this path.
+  private static List<SegmentColumnStat> readSegmentColumnStats(ResultSet rs)
+      throws SQLException {
+    List<SegmentColumnStat> result = new ArrayList<>();
+    while (rs.next()) {
+      long segmentId = rs.getLong(1);
+      // SQL NULL must map to the unknown sentinel (-1), not getLong's default of 0.
+      long totalDocs = rs.getLong(2);
+      if (rs.wasNull()) {
+        totalDocs = -1;
+      }
+      long ndv = rs.getLong(3);
+      if (rs.wasNull()) {
+        ndv = -1;
+      }
+      String minVal = rs.getString(4);
+      String maxVal = rs.getString(5);
+      boolean minTrusted = rs.getInt(6) != 0;
+      result.add(new SegmentColumnStat(segmentId, null, totalDocs, ndv, StatConfidence.ESTIMATED,
+          minVal, maxVal, minTrusted));
+    }
+    return result;
+  }
+
   // ---------------------------------------------------------------------------
   // Helpers
   // ---------------------------------------------------------------------------
@@ -695,6 +797,35 @@ public class SqliteStatsStore implements StatsStore {
       return Double.compare(da, db);
     } catch (NumberFormatException e) {
       return a.compareTo(b);
+    }
+  }
+
+  /// Parses a string-serialized value to a finite [Double], or returns `null` when the value is
+  /// `null`, does not parse as a number (i.e. the column is non-numeric), or is non-finite
+  /// (`NaN`/`Infinity`). Non-finite bounds must not reach `min_num`/`max_num`: a stored `NaN` makes
+  /// every SQLite comparison false (so the segment is wrongly excluded from all windows) and a
+  /// stored `Infinity` survives every bounded window — both silently skew estimates. Such columns
+  /// fall through to the string path instead.
+  @Nullable
+  private static Double parseDoubleOrNull(@Nullable String value) {
+    if (value == null) {
+      return null;
+    }
+    try {
+      double d = Double.parseDouble(value);
+      return Double.isFinite(d) ? d : null;
+    } catch (NumberFormatException e) {
+      return null;
+    }
+  }
+
+  /// Binds a nullable double parameter, using SQL NULL when the value is `null`.
+  private static void setNullableDouble(PreparedStatement ps, int idx, @Nullable Double value)
+      throws SQLException {
+    if (value == null) {
+      ps.setNull(idx, Types.REAL);
+    } else {
+      ps.setDouble(idx, value);
     }
   }
 

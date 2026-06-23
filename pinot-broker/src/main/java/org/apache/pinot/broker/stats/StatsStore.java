@@ -24,7 +24,9 @@ import java.util.List;
 import java.util.Map;
 import java.util.OptionalLong;
 import javax.annotation.Nullable;
+import org.apache.pinot.query.planner.spi.stats.ColumnPredicate;
 import org.apache.pinot.query.planner.spi.stats.ColumnStatistics;
+import org.apache.pinot.query.planner.spi.stats.SegmentColumnStat;
 import org.apache.pinot.query.planner.spi.stats.TableStatistics;
 
 
@@ -125,6 +127,38 @@ public interface StatsStore extends Closeable {
   /// @throws StatsStoreException if the purge fails
   void purgeAll()
       throws StatsStoreException;
+
+  /// Returns per-segment statistics for the (non-consuming) segments of the given column whose
+  /// stored `[min, max]` range overlaps the numeric predicate window, capped at `limit` rows.
+  ///
+  /// The default implementation returns an empty list (no segment-aware data). Implementations that
+  /// persist numeric per-segment bounds override this to push the prune down to the store.
+  ///
+  /// @param tableNameWithType fully-qualified table name including type suffix
+  /// @param columnName        name of the column
+  /// @param predicate         numeric overlap window to prune by
+  /// @param limit             maximum number of surviving segments to return
+  /// @throws StatsStoreException if the read fails
+  default List<SegmentColumnStat> getSurvivingSegmentColumnStats(String tableNameWithType,
+      String columnName, ColumnPredicate predicate, int limit)
+      throws StatsStoreException {
+    return List.of();
+  }
+
+  /// Returns per-segment statistics for all (non-consuming) segments of the given column, capped at
+  /// `limit` rows. Used by the segment-aware estimator for string columns, which are pruned in Java.
+  ///
+  /// The default implementation returns an empty list.
+  ///
+  /// @param tableNameWithType fully-qualified table name including type suffix
+  /// @param columnName        name of the column
+  /// @param limit             maximum number of segments to return
+  /// @throws StatsStoreException if the read fails
+  default List<SegmentColumnStat> getSegmentColumnStats(String tableNameWithType, String columnName,
+      int limit)
+      throws StatsStoreException {
+    return List.of();
+  }
 
   /// Returns `true` if the given table has at least one consuming (REALTIME IN_PROGRESS)
   /// segment in the store.

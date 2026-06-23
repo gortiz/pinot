@@ -18,10 +18,14 @@
  */
 package org.apache.pinot.broker.stats;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.OptionalLong;
 import java.util.function.Function;
 import javax.annotation.Nullable;
+import org.apache.pinot.query.planner.spi.stats.ColumnPredicate;
 import org.apache.pinot.query.planner.spi.stats.ColumnStatistics;
+import org.apache.pinot.query.planner.spi.stats.SegmentColumnStat;
 import org.apache.pinot.query.planner.spi.stats.StatConfidence;
 import org.apache.pinot.query.planner.spi.stats.TableStatistics;
 import org.apache.pinot.spi.config.table.TableConfig;
@@ -213,9 +217,99 @@ public class LogicalTableStatsResolver {
     return OptionalLong.of(offline.orElse(0L) + realtime.orElse(0L));
   }
 
+  /// Returns per-segment column stats for segments whose numeric `[min, max]` range overlaps the
+  /// predicate window, capped at `limit`. For a raw (logical) name, unions the survivors of the
+  /// OFFLINE and REALTIME physical tables (segments are disjoint across the two), bounding the
+  /// combined result at `limit`. Store errors are logged at WARN and yield an empty list.
+  ///
+  /// @param tableName  raw (logical) or suffixed (physical) table name
+  /// @param columnName column to look up
+  /// @param predicate  numeric overlap window
+  /// @param limit      maximum number of surviving segments to return
+  public List<SegmentColumnStat> getSurvivingSegmentColumnStats(String tableName, String columnName,
+      ColumnPredicate predicate, int limit) {
+    return unionPhysical(tableName, limit,
+        (physical, lim) -> surviving(physical, columnName, predicate, lim));
+  }
+
+  /// Returns all (non-consuming) per-segment column stats, capped at `limit`, applying the same
+  /// raw-vs-suffixed union semantics as [#getSurvivingSegmentColumnStats]. Used by the string
+  /// (Java-pruned) path.
+  ///
+  /// @param tableName  raw (logical) or suffixed (physical) table name
+  /// @param columnName column to look up
+  /// @param limit      maximum number of segments to return
+  public List<SegmentColumnStat> getSegmentColumnStats(String tableName, String columnName,
+      int limit) {
+    return unionPhysical(tableName, limit,
+        (physical, lim) -> allSegments(physical, columnName, lim));
+  }
+
   // ---------------------------------------------------------------------------
   // Internal helpers
   // ---------------------------------------------------------------------------
+
+  /// Applies `fetch` to the physical table(s) backing `tableName`, bounding the combined result at
+  /// `limit`. For a suffixed name, a single fetch; for a raw name, OFFLINE followed by REALTIME with
+  /// the remaining budget.
+  private List<SegmentColumnStat> unionPhysical(String tableName, int limit,
+      PhysicalFetch fetch) {
+    if (limit <= 0) {
+      return List.of();
+    }
+    TableType type = TableNameBuilder.getTableTypeFromTableName(tableName);
+    if (type != null) {
+      return fetch.apply(tableName, limit);
+    }
+    String offlineTable = TableNameBuilder.OFFLINE.tableNameWithType(tableName);
+    String realtimeTable = TableNameBuilder.REALTIME.tableNameWithType(tableName);
+    List<SegmentColumnStat> offline = fetch.apply(offlineTable, limit);
+    if (offline.size() >= limit) {
+      return offline;
+    }
+    List<SegmentColumnStat> realtime = fetch.apply(realtimeTable, limit - offline.size());
+    if (offline.isEmpty()) {
+      return realtime;
+    }
+    if (realtime.isEmpty()) {
+      return offline;
+    }
+    List<SegmentColumnStat> merged = new ArrayList<>(offline.size() + realtime.size());
+    merged.addAll(offline);
+    merged.addAll(realtime);
+    return merged;
+  }
+
+  /// Reads surviving segment stats from the store, suppressing errors.
+  private List<SegmentColumnStat> surviving(String tableNameWithType, String columnName,
+      ColumnPredicate predicate, int limit) {
+    try {
+      return _statsStore.getSurvivingSegmentColumnStats(tableNameWithType, columnName, predicate,
+          limit);
+    } catch (StatsStoreException | RuntimeException e) {
+      LOGGER.warn("Failed to read surviving segment stats for {}/{}: {}", tableNameWithType,
+          columnName, e.getMessage());
+      return List.of();
+    }
+  }
+
+  /// Reads all per-segment stats from the store, suppressing errors.
+  private List<SegmentColumnStat> allSegments(String tableNameWithType, String columnName,
+      int limit) {
+    try {
+      return _statsStore.getSegmentColumnStats(tableNameWithType, columnName, limit);
+    } catch (StatsStoreException | RuntimeException e) {
+      LOGGER.warn("Failed to read segment stats for {}/{}: {}", tableNameWithType, columnName,
+          e.getMessage());
+      return List.of();
+    }
+  }
+
+  /// Functional interface for a per-physical-table fetch bounded by a row limit.
+  @FunctionalInterface
+  private interface PhysicalFetch {
+    List<SegmentColumnStat> apply(String physicalTableNameWithType, int limit);
+  }
 
   /// Returns physical stats for a suffixed table name, applying confidence adjustments.
   @Nullable

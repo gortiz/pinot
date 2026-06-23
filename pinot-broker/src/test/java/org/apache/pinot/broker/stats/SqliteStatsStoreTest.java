@@ -23,10 +23,13 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Arrays;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.OptionalLong;
+import org.apache.pinot.query.planner.spi.stats.ColumnPredicate;
 import org.apache.pinot.query.planner.spi.stats.ColumnStatistics;
+import org.apache.pinot.query.planner.spi.stats.SegmentColumnStat;
 import org.apache.pinot.query.planner.spi.stats.StatConfidence;
 import org.apache.pinot.query.planner.spi.stats.TableStatistics;
 import org.testng.annotations.AfterMethod;
@@ -247,6 +250,118 @@ public class SqliteStatsStoreTest {
   public void testColumnStatsNullWhenNoRows()
       throws Exception {
     assertNull(_store.getColumnStats(TABLE_A, "colA"));
+  }
+
+  // ---------------------------------------------------------------------------
+  // Segment-aware prune: getSurvivingSegmentColumnStats / getSegmentColumnStats
+  // ---------------------------------------------------------------------------
+
+  /// `colA = 6` over seg1[0,10], seg2[5,10], seg3[7,15]: seg3 is pruned by the SQL overlap filter
+  /// (min_num 7 > 6) and only seg1/seg2 survive, each carrying its own total_docs/ndv.
+  @Test
+  public void testSurvivingSegmentsEqualityPrune()
+      throws Exception {
+    _store.upsertSegmentStats(TABLE_A, Arrays.asList(
+        seg("seg1", 1L, 100L, 1000L, 0L, 100L, false),
+        seg("seg2", 2L, 1000L, 2000L, 0L, 100L, false),
+        seg("seg3", 3L, 10000L, 3000L, 0L, 100L, false)));
+    _store.upsertSegmentColumnStats(TABLE_A, Arrays.asList(
+        col("seg1", "colA", 10L, "0", "10", true, 4.0, 0.0),
+        col("seg2", "colA", 5L, "5", "10", true, 4.0, 0.0),
+        col("seg3", "colA", 7L, "7", "15", true, 4.0, 0.0)));
+
+    List<SegmentColumnStat> survivors =
+        _store.getSurvivingSegmentColumnStats(TABLE_A, "colA", ColumnPredicate.equalTo(6.0), 100);
+
+    assertEquals(survivors.size(), 2);
+    // The read path returns segment ids (not names); key by the persisted FNV id.
+    Map<Long, SegmentColumnStat> bySegment = new HashMap<>();
+    for (SegmentColumnStat s : survivors) {
+      bySegment.put(s.getSegmentId(), s);
+    }
+    long seg1 = SegmentColumnStat.hashSegmentName("seg1");
+    long seg2 = SegmentColumnStat.hashSegmentName("seg2");
+    assertTrue(bySegment.containsKey(seg1));
+    assertTrue(bySegment.containsKey(seg2));
+    assertFalse(bySegment.containsKey(SegmentColumnStat.hashSegmentName("seg3")));
+    assertEquals(bySegment.get(seg1).getTotalDocs(), 100L);
+    assertEquals(bySegment.get(seg1).getNdv(), 10L);
+    assertEquals(bySegment.get(seg2).getTotalDocs(), 1000L);
+  }
+
+  /// A range window keeps every segment whose `[min,max]` overlaps it.
+  @Test
+  public void testSurvivingSegmentsRangeOverlap()
+      throws Exception {
+    _store.upsertSegmentStats(TABLE_A, Arrays.asList(
+        seg("seg1", 1L, 100L, 1000L, 0L, 100L, false),
+        seg("seg2", 2L, 100L, 2000L, 0L, 100L, false),
+        seg("seg3", 3L, 100L, 3000L, 0L, 100L, false)));
+    _store.upsertSegmentColumnStats(TABLE_A, Arrays.asList(
+        col("seg1", "colA", 10L, "0", "4", true, 4.0, 0.0),
+        col("seg2", "colA", 5L, "5", "10", true, 4.0, 0.0),
+        col("seg3", "colA", 7L, "11", "20", true, 4.0, 0.0)));
+
+    // Window [5,7]: seg1 [0,4] excluded (max 4 < 5), seg3 [11,20] excluded (min 11 > 7).
+    List<SegmentColumnStat> survivors =
+        _store.getSurvivingSegmentColumnStats(TABLE_A, "colA", ColumnPredicate.range(5.0, 7.0), 100);
+    assertEquals(survivors.size(), 1);
+    assertEquals(survivors.get(0).getSegmentId(), SegmentColumnStat.hashSegmentName("seg2"));
+  }
+
+  /// The limit caps the number of rows returned (cost guard).
+  @Test
+  public void testSurvivingSegmentsRespectsLimit()
+      throws Exception {
+    _store.upsertSegmentStats(TABLE_A, Arrays.asList(
+        seg("seg1", 1L, 100L, 1000L, 0L, 100L, false),
+        seg("seg2", 2L, 100L, 2000L, 0L, 100L, false)));
+    _store.upsertSegmentColumnStats(TABLE_A, Arrays.asList(
+        col("seg1", "colA", 10L, "0", "10", true, 4.0, 0.0),
+        col("seg2", "colA", 5L, "0", "10", true, 4.0, 0.0)));
+    List<SegmentColumnStat> survivors =
+        _store.getSurvivingSegmentColumnStats(TABLE_A, "colA", ColumnPredicate.equalTo(5.0), 1);
+    assertEquals(survivors.size(), 1);
+  }
+
+  /// Non-numeric (string) columns have NULL numeric bounds, so the numeric prune returns nothing;
+  /// the all-segments fetch returns them for Java-side pruning instead.
+  @Test
+  public void testStringColumnsExcludedFromNumericPruneButReturnedByAllFetch()
+      throws Exception {
+    _store.upsertSegmentStats(TABLE_A, Arrays.asList(
+        seg("seg1", 1L, 100L, 1000L, 0L, 100L, false),
+        seg("seg2", 2L, 100L, 2000L, 0L, 100L, false)));
+    _store.upsertSegmentColumnStats(TABLE_A, Arrays.asList(
+        col("seg1", "name", 10L, "apple", "mango", true, 8.0, 0.0),
+        col("seg2", "name", 5L, "orange", "zebra", true, 8.0, 0.0)));
+
+    // Numeric prune finds nothing (min_num/max_num are NULL for non-numeric values).
+    List<SegmentColumnStat> numeric = _store.getSurvivingSegmentColumnStats(
+        TABLE_A, "name", ColumnPredicate.range(Double.NEGATIVE_INFINITY, Double.POSITIVE_INFINITY),
+        100);
+    assertTrue(numeric.isEmpty());
+
+    // All-segments fetch returns both for Java pruning.
+    List<SegmentColumnStat> all = _store.getSegmentColumnStats(TABLE_A, "name", 100);
+    assertEquals(all.size(), 2);
+  }
+
+  /// Consuming segments are excluded from both prune reads.
+  @Test
+  public void testConsumingSegmentsExcludedFromPrune()
+      throws Exception {
+    _store.upsertSegmentStats(TABLE_A, Arrays.asList(
+        seg("seg1", 1L, 100L, 1000L, 0L, 100L, false),
+        seg("consuming", 2L, 100L, 2000L, 0L, 100L, true)));
+    _store.upsertSegmentColumnStats(TABLE_A, Arrays.asList(
+        col("seg1", "colA", 10L, "0", "10", true, 4.0, 0.0),
+        col("consuming", "colA", 5L, "0", "10", true, 4.0, 0.0)));
+    List<SegmentColumnStat> survivors =
+        _store.getSurvivingSegmentColumnStats(TABLE_A, "colA", ColumnPredicate.equalTo(5.0), 100);
+    assertEquals(survivors.size(), 1);
+    assertEquals(survivors.get(0).getSegmentId(), SegmentColumnStat.hashSegmentName("seg1"));
+    assertEquals(_store.getSegmentColumnStats(TABLE_A, "colA", 100).size(), 1);
   }
 
   // ---------------------------------------------------------------------------

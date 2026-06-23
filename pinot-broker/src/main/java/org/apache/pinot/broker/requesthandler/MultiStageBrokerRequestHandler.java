@@ -551,6 +551,9 @@ public class MultiStageBrokerRequestHandler extends BaseBrokerRequestHandler {
     int defaultJoinReorderMaxJoins = _config.getProperty(
         CommonConstants.Broker.CONFIG_OF_JOIN_REORDER_MAX_JOINS,
         CommonConstants.Broker.DEFAULT_JOIN_REORDER_MAX_JOINS);
+    boolean defaultUseSegmentAwareSelectivity = _config.getProperty(
+        CommonConstants.Broker.CONFIG_OF_USE_SEGMENT_AWARE_SELECTIVITY,
+        CommonConstants.Broker.DEFAULT_USE_SEGMENT_AWARE_SELECTIVITY);
     boolean defaultUseLiteMode = _config.getProperty(
         CommonConstants.Broker.CONFIG_OF_USE_LITE_MODE,
         CommonConstants.Broker.DEFAULT_USE_LITE_MODE);
@@ -599,6 +602,7 @@ public class MultiStageBrokerRequestHandler extends BaseBrokerRequestHandler {
         .defaultUsePhysicalOptimizer(defaultUsePhysicalOptimizer)
         .defaultUseJoinReorder(defaultUseJoinReorder)
         .defaultJoinReorderMaxJoins(defaultJoinReorderMaxJoins)
+        .defaultUseSegmentAwareSelectivity(defaultUseSegmentAwareSelectivity)
         .defaultUseLiteMode(defaultUseLiteMode)
         .defaultRunInBroker(defaultRunInBroker)
         .defaultUseBrokerPruning(defaultUseBrokerPruning)

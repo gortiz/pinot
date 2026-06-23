@@ -33,7 +33,9 @@ import org.apache.helix.model.IdealState;
 import org.apache.helix.zookeeper.datamodel.ZNRecord;
 import org.apache.pinot.broker.routing.segmentmetadata.SegmentZkMetadataFetchListener;
 import org.apache.pinot.common.metadata.segment.SegmentZKMetadata;
+import org.apache.pinot.query.planner.spi.stats.ColumnPredicate;
 import org.apache.pinot.query.planner.spi.stats.ColumnStatistics;
+import org.apache.pinot.query.planner.spi.stats.SegmentColumnStat;
 import org.apache.pinot.query.planner.spi.stats.TableStatistics;
 import org.apache.pinot.spi.config.table.TableConfig;
 import org.apache.pinot.spi.utils.CommonConstants.Segment.Realtime.Status;
@@ -198,6 +200,35 @@ public class BrokerTableStatsManager implements Closeable {
       return OptionalLong.empty();
     }
     return _resolver.estimateRowsInTimeRange(tableName, startMs, endMs);
+  }
+
+  /// Returns per-segment column stats for segments whose numeric range overlaps the predicate
+  /// window, capped at `limit`. Returns an empty list when disabled or unavailable.
+  ///
+  /// @param tableName  raw table name or fully-qualified name with type suffix
+  /// @param columnName column to look up
+  /// @param predicate  numeric overlap window
+  /// @param limit      maximum number of surviving segments to return
+  public List<SegmentColumnStat> getSurvivingSegmentColumnStats(String tableName, String columnName,
+      ColumnPredicate predicate, int limit) {
+    if (!_enabled) {
+      return List.of();
+    }
+    return _resolver.getSurvivingSegmentColumnStats(tableName, columnName, predicate, limit);
+  }
+
+  /// Returns all (non-consuming) per-segment column stats, capped at `limit`. Returns an empty list
+  /// when disabled or unavailable.
+  ///
+  /// @param tableName  raw table name or fully-qualified name with type suffix
+  /// @param columnName column to look up
+  /// @param limit      maximum number of segments to return
+  public List<SegmentColumnStat> getSegmentColumnStats(String tableName, String columnName,
+      int limit) {
+    if (!_enabled) {
+      return List.of();
+    }
+    return _resolver.getSegmentColumnStats(tableName, columnName, limit);
   }
 
   @Override

@@ -25,7 +25,9 @@ import java.util.Arrays;
 import java.util.Comparator;
 import java.util.List;
 import java.util.OptionalLong;
+import org.apache.pinot.query.planner.spi.stats.ColumnPredicate;
 import org.apache.pinot.query.planner.spi.stats.ColumnStatistics;
+import org.apache.pinot.query.planner.spi.stats.SegmentColumnStat;
 import org.apache.pinot.query.planner.spi.stats.StatConfidence;
 import org.apache.pinot.query.planner.spi.stats.TableStatistics;
 import org.apache.pinot.spi.config.table.DedupConfig;
@@ -564,6 +566,45 @@ public class LogicalTableStatsResolverTest {
     assertNotNull(stats);
     assertEquals(stats.getNdvConfidence(), StatConfidence.ESTIMATED,
         "Merged confidence from two EXACT sides must be ESTIMATED");
+  }
+
+  // ---------------------------------------------------------------------------
+  // Segment-aware surviving/all per-segment reads (raw-name union)
+  // ---------------------------------------------------------------------------
+
+  @Test
+  public void testSurvivingSegmentsRawUnionsOfflineAndRealtime()
+      throws Exception {
+    insertSegments(OFFLINE_TABLE, Arrays.asList(row("seg1", 1L, 100L, 1024L, 0L, 100L, false)));
+    insertSegments(REALTIME_TABLE, Arrays.asList(row("rtSeg1", 10L, 200L, 1024L, 0L, 100L, false)));
+    _store.upsertSegmentColumnStats(OFFLINE_TABLE, Arrays.asList(
+        new SegmentColumnStatsRow("seg1", "val", 10L, "0", "10", true, 4.0, 0.0)));
+    _store.upsertSegmentColumnStats(REALTIME_TABLE, Arrays.asList(
+        new SegmentColumnStatsRow("rtSeg1", "val", 5L, "5", "15", true, 4.0, 0.0)));
+
+    // value 6 overlaps both physical tables' segments → raw lookup unions both.
+    List<SegmentColumnStat> survivors = _resolver.getSurvivingSegmentColumnStats(RAW_TABLE, "val",
+        ColumnPredicate.equalTo(6.0), 100);
+    assertEquals(survivors.size(), 2, "Raw lookup must union OFFLINE and REALTIME survivors");
+
+    // Suffixed lookup sees only its own physical table.
+    assertEquals(_resolver.getSurvivingSegmentColumnStats(OFFLINE_TABLE, "val",
+        ColumnPredicate.equalTo(6.0), 100).size(), 1);
+  }
+
+  @Test
+  public void testSurvivingSegmentsRawUnionBoundedByLimit()
+      throws Exception {
+    insertSegments(OFFLINE_TABLE, Arrays.asList(row("seg1", 1L, 100L, 1024L, 0L, 100L, false)));
+    insertSegments(REALTIME_TABLE, Arrays.asList(row("rtSeg1", 10L, 200L, 1024L, 0L, 100L, false)));
+    _store.upsertSegmentColumnStats(OFFLINE_TABLE, Arrays.asList(
+        new SegmentColumnStatsRow("seg1", "val", 10L, "0", "10", true, 4.0, 0.0)));
+    _store.upsertSegmentColumnStats(REALTIME_TABLE, Arrays.asList(
+        new SegmentColumnStatsRow("rtSeg1", "val", 5L, "5", "15", true, 4.0, 0.0)));
+
+    // limit 1 → offline fills the budget, realtime is not consulted.
+    assertEquals(_resolver.getSurvivingSegmentColumnStats(RAW_TABLE, "val",
+        ColumnPredicate.equalTo(6.0), 1).size(), 1);
   }
 
   // ---------------------------------------------------------------------------

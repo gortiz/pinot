@@ -18,10 +18,13 @@
  */
 package org.apache.pinot.broker.stats;
 
+import java.util.List;
 import java.util.OptionalLong;
 import javax.annotation.Nullable;
+import org.apache.pinot.query.planner.spi.stats.ColumnPredicate;
 import org.apache.pinot.query.planner.spi.stats.ColumnStatistics;
 import org.apache.pinot.query.planner.spi.stats.PinotStatisticsProvider;
+import org.apache.pinot.query.planner.spi.stats.SegmentColumnStat;
 import org.apache.pinot.query.planner.spi.stats.TableStatistics;
 
 
@@ -59,5 +62,17 @@ public class BrokerStatisticsProvider implements PinotStatisticsProvider {
   @Override
   public OptionalLong estimateRowsInTimeRange(String tableName, long startMs, long endMs) {
     return _statsManager.estimateRowsInTimeRange(tableName, startMs, endMs);
+  }
+
+  @Override
+  public List<SegmentColumnStat> getSurvivingSegmentColumnStats(String tableName, String columnName,
+      ColumnPredicate predicate, int limit) {
+    return _statsManager.getSurvivingSegmentColumnStats(tableName, columnName, predicate, limit);
+  }
+
+  @Override
+  public List<SegmentColumnStat> getSegmentColumnStats(String tableName, String columnName,
+      int limit) {
+    return _statsManager.getSegmentColumnStats(tableName, columnName, limit);
   }
 }

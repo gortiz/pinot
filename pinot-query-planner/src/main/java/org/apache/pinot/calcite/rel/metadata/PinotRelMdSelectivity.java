@@ -20,7 +20,9 @@ package org.apache.pinot.calcite.rel.metadata;
 
 import com.google.common.collect.Range;
 import java.math.BigDecimal;
+import java.util.ArrayList;
 import java.util.List;
+import java.util.OptionalDouble;
 import java.util.OptionalLong;
 import java.util.Set;
 import javax.annotation.Nullable;
@@ -155,7 +157,7 @@ public class PinotRelMdSelectivity implements MetadataHandler<BuiltInMetadata.Se
     long timeLo = Long.MIN_VALUE;
     long timeHi = Long.MAX_VALUE;
     boolean hasTimePredicate = false;
-    double nonTimeSelectivity = 1.0;
+    List<RexNode> nonTimeConjuncts = new ArrayList<>(conjuncts.size());
 
     for (RexNode conjunct : conjuncts) {
       if (timeCol != null && rowCount > 0) {
@@ -185,7 +187,7 @@ public class PinotRelMdSelectivity implements MetadataHandler<BuiltInMetadata.Se
           }
         }
       }
-      nonTimeSelectivity *= computeConjunctSelectivity(conjunct, ctx, tableName, provider, rowCount);
+      nonTimeConjuncts.add(conjunct);
     }
 
     double timeSelectivity = 1.0;
@@ -208,7 +210,38 @@ public class PinotRelMdSelectivity implements MetadataHandler<BuiltInMetadata.Se
       }
     }
 
+    double nonTimeSelectivity = computeNonTimeSelectivity(predicate, nonTimeConjuncts, ctx,
+        tableName, provider, rowCount);
+
     return Math.min(1.0, Math.max(0.0, timeSelectivity * nonTimeSelectivity));
+  }
+
+  /// Computes the combined selectivity of the non-time conjuncts. When a per-query
+  /// [SegmentAwareSelectivityEstimator] is installed (feature on) and produces an estimate, that
+  /// (tighter, query-aware) value is used; otherwise the conjuncts are multiplied using the
+  /// aggregated per-conjunct logic — the unchanged behavior when the feature is off.
+  private double computeNonTimeSelectivity(@Nullable RexNode effectivePred,
+      List<RexNode> nonTimeConjuncts, ScanContext ctx, String tableName,
+      PinotStatisticsProvider provider, double rowCount) {
+    if (nonTimeConjuncts.isEmpty()) {
+      return 1.0;
+    }
+    SegmentAwareSelectivityEstimator estimator = SegmentAwareSelectivityEstimator.current();
+    if (estimator != null && effectivePred != null && rowCount > 0) {
+      OptionalDouble segAware = estimator.estimate(effectivePred, nonTimeConjuncts, tableName,
+          provider, rowCount,
+          ref -> resolveColName(ref, ctx),
+          col -> resolveColumnDataType(col, ctx),
+          node -> computeConjunctSelectivity(node, ctx, tableName, provider, rowCount));
+      if (segAware.isPresent()) {
+        return segAware.getAsDouble();
+      }
+    }
+    double selectivity = 1.0;
+    for (RexNode conjunct : nonTimeConjuncts) {
+      selectivity *= computeConjunctSelectivity(conjunct, ctx, tableName, provider, rowCount);
+    }
+    return selectivity;
   }
 
   // --------------------------------------------------------------------------
