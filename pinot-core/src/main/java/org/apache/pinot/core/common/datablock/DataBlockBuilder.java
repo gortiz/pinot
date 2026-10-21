@@ -71,12 +71,44 @@ public class DataBlockBuilder {
   public static RowDataBlock buildFromRows(List<Object[]> rows, DataSchema dataSchema,
       @Nullable AggregationFunction[] aggFunctions, PagedPinotOutputStream.PageAllocator allocator)
       throws IOException {
+    return buildFromRows(rows, dataSchema, aggFunctions, null, allocator);
+  }
+
+  /// Builds a block that holds only some columns of the given rows, without creating a projected copy of each row.
+  ///
+  /// Column `i` of the block reads `row[columnMap[i]]`, and `dataSchema` describes the columns of the block, not the
+  /// columns of the rows. When `columnMap` is null, the block holds every column of the rows, in order.
+  ///
+  /// `aggFunctions` follows the same convention as the other overloads, relative to the columns of the block: the
+  /// last `aggFunctions.length` columns of the block are the aggregation columns.
+  public static RowDataBlock buildFromRows(List<Object[]> rows, DataSchema dataSchema,
+      @Nullable AggregationFunction[] aggFunctions, @Nullable int[] columnMap)
+      throws IOException {
+    return buildFromRows(rows, dataSchema, aggFunctions, columnMap,
+        PagedPinotOutputStream.HeapPageAllocator.createSmall());
+  }
+
+  private static RowDataBlock buildFromRows(List<Object[]> rows, DataSchema dataSchema,
+      @Nullable AggregationFunction[] aggFunctions, @Nullable int[] columnMap,
+      PagedPinotOutputStream.PageAllocator allocator)
+      throws IOException {
     int numRows = rows.size();
 
     // TODO: consolidate these null utils into data table utils.
     // Selection / Agg / Distinct all have similar code.
     ColumnDataType[] storedTypes = dataSchema.getStoredColumnDataTypes();
     int numColumns = storedTypes.length;
+    int[] sourceColumns = columnMap;
+    if (sourceColumns == null) {
+      sourceColumns = new int[numColumns];
+      for (int colId = 0; colId < numColumns; colId++) {
+        sourceColumns[colId] = colId;
+      }
+    } else {
+      Preconditions.checkArgument(sourceColumns.length == numColumns,
+          "The column map has %s columns, but the data schema has %s", sourceColumns.length, numColumns);
+    }
+    int[] finalSourceColumns = sourceColumns;
     RoaringBitmap[] nullBitmaps = new RoaringBitmap[numColumns];
     Object[] nullPlaceholders = new Object[numColumns];
     for (int colId = 0; colId < numColumns; colId++) {
@@ -97,7 +129,7 @@ public class DataBlockBuilder {
       for (int rowId = start; rowId < end; rowId++) {
         Object[] row = rows.get(rowId);
         for (int colId = 0; colId < numColumns; colId++) {
-          Object value = row[colId];
+          Object value = row[finalSourceColumns[colId]];
           ColumnDataType storedType = storedTypes[colId];
 
           if (storedType == ColumnDataType.OBJECT) {
